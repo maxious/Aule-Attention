@@ -19,32 +19,32 @@
                OpExtension "SPV_KHR_16bit_storage"
                OpMemoryModel Logical GLSL450
                OpEntryPoint GLCompute %main "main" %gl_GlobalInvocationID %gl_WorkGroupID %Q_buf %K_buf %out_buf %push_constants
-               OpExecutionMode %main LocalSize 32 1 1
+                OpExecutionMode %main LocalSize 16 16 1
 
                ; Decorations for builtins
                OpDecorate %gl_GlobalInvocationID BuiltIn GlobalInvocationId
                OpDecorate %gl_WorkGroupID BuiltIn WorkgroupId
 
-               ; Buffer bindings
-               OpDecorate %Q_buf DescriptorSet 0
-               OpDecorate %Q_buf Binding 0
-               OpDecorate %K_buf DescriptorSet 0
-               OpDecorate %K_buf Binding 1
-               OpDecorate %out_buf DescriptorSet 0
-               OpDecorate %out_buf Binding 2
+                ; Buffer bindings
+                OpDecorate %Q_buf DescriptorSet 0
+                OpDecorate %Q_buf Binding 0
+                OpDecorate %K_buf DescriptorSet 0
+                OpDecorate %K_buf Binding 1
+                OpDecorate %out_buf DescriptorSet 0
+                OpDecorate %out_buf Binding 2
 
-               ; Buffer block decorations
-               OpDecorate %QBlock Block
-               OpMemberDecorate %QBlock 0 Offset 0
-               OpDecorate %_runtimearr_bf16_q ArrayStride 2
+                ; Buffer block decorations
+                OpDecorate %QBlock Block
+                OpMemberDecorate %QBlock 0 Offset 0
+                OpDecorate %_runtimearr_bf16_q ArrayStride 2
 
-               OpDecorate %KBlock Block
-               OpMemberDecorate %KBlock 0 Offset 0
-               OpDecorate %_runtimearr_bf16_k ArrayStride 2
+                OpDecorate %KBlock Block
+                OpMemberDecorate %KBlock 0 Offset 0
+                OpDecorate %_runtimearr_bf16_k ArrayStride 2
 
-               OpDecorate %OutBlock Block
-               OpMemberDecorate %OutBlock 0 Offset 0
-               OpDecorate %_runtimearr_bf16_out ArrayStride 2
+                OpDecorate %OutBlock Block
+                OpMemberDecorate %OutBlock 0 Offset 0
+                OpDecorate %_runtimearr_bf16_out ArrayStride 2
 
                ; Push constant block
                OpDecorate %PushConstBlock Block
@@ -81,15 +81,15 @@
        %bf16 = OpTypeFloat 16 BFloat16KHR
      %bf16v4 = OpTypeVector %bf16 4
 
-       ; Runtime arrays
-%_runtimearr_bf16_q = OpTypeRuntimeArray %bf16
-%_runtimearr_bf16_k = OpTypeRuntimeArray %bf16
-%_runtimearr_bf16_out = OpTypeRuntimeArray %bf16
+        ; Runtime arrays
+        %_runtimearr_bf16_q = OpTypeRuntimeArray %bf16
+        %_runtimearr_bf16_k = OpTypeRuntimeArray %bf16
+        %_runtimearr_bf16_out = OpTypeRuntimeArray %bf16
 
-       ; Buffer structs
-     %QBlock = OpTypeStruct %_runtimearr_bf16_q
-     %KBlock = OpTypeStruct %_runtimearr_bf16_k
-   %OutBlock = OpTypeStruct %_runtimearr_bf16_out
+        ; Buffer structs
+        %QBlock = OpTypeStruct %_runtimearr_bf16_q
+        %KBlock = OpTypeStruct %_runtimearr_bf16_k
+        %OutBlock = OpTypeStruct %_runtimearr_bf16_out
 
        ; Push constant struct
 %PushConstBlock = OpTypeStruct %uint %uint %uint %uint %uint %float
@@ -173,17 +173,17 @@
                OpBranchConditional %loop_cond %loop_body %loop_end
 
   %loop_body = OpLabel
-               ; Load Q[q_offset + d]
-       %q_idx = OpIAdd %uint %q_offset %d
-       %q_ptr = OpAccessChain %ptr_bf16_sb %Q_buf %uint_0 %q_idx
-        %q_bf = OpLoad %bf16 %q_ptr
-        %q_f32 = OpFConvert %float %q_bf
+                ; Load Q[q_offset + d]
+        %q_idx = OpIAdd %uint %q_offset %d
+        %q_ptr = OpAccessChain %ptr_bf16_sb %Q_buf %uint_0 %q_idx
+         %q_bf = OpLoad %bf16 %q_ptr
+         %q_f32 = OpFConvert %float %q_bf
 
-               ; Load K[k_offset + d]  
-       %k_idx = OpIAdd %uint %k_offset %d
-       %k_ptr = OpAccessChain %ptr_bf16_sb %K_buf %uint_0 %k_idx
-        %k_bf = OpLoad %bf16 %k_ptr
-        %k_f32 = OpFConvert %float %k_bf
+                ; Load K[k_offset + d]
+        %k_idx = OpIAdd %uint %k_offset %d
+        %k_ptr = OpAccessChain %ptr_bf16_sb %K_buf %uint_0 %k_idx
+         %k_bf = OpLoad %bf16 %k_ptr
+         %k_f32 = OpFConvert %float %k_bf
 
                ; Accumulate: acc += q * k
        %prod = OpFMul %float %q_f32 %k_f32
@@ -207,9 +207,9 @@
     %o_offset1 = OpIAdd %uint %o_base %o_row_off
     %o_offset = OpIAdd %uint %o_offset1 %gid_x
 
-               ; Store result
-     %out_ptr = OpAccessChain %ptr_bf16_sb %out_buf %uint_0 %o_offset
-               OpStore %out_ptr %result_bf
+                ; Store result
+      %out_ptr = OpAccessChain %ptr_bf16_sb %out_buf %uint_0 %o_offset
+                OpStore %out_ptr %result_bf
                OpBranch %end_if
 
      %end_if = OpLabel

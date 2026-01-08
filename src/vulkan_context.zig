@@ -28,6 +28,7 @@ pub const GpuCapabilities = struct {
     vendor: GpuVendor,
     amd_arch: AmdArch,
     fp16_supported: bool,
+    bf16_supported: bool,
     subgroup_size: u32, // Wavefront/warp size
     device_name: [256]u8,
 
@@ -97,11 +98,18 @@ pub const VulkanContext = struct {
         const physical_device, const queue_family_index = try selectPhysicalDevice(allocator, vki, instance);
         const device_properties = vki.getPhysicalDeviceProperties(physical_device);
 
+        // Get device extensions
+        var extension_count: u32 = 0;
+        _ = try vki.enumerateDeviceExtensionProperties(physical_device, null, &extension_count, null);
+        const extensions = try allocator.alloc(vk.ExtensionProperties, extension_count);
+        defer allocator.free(extensions);
+        _ = try vki.enumerateDeviceExtensionProperties(physical_device, null, &extension_count, extensions.ptr);
+
         // Detect GPU capabilities
-        const gpu_caps = detectGpuCapabilities(device_properties);
+        const gpu_caps = detectGpuCapabilities(device_properties, extensions);
         log.info("Selected GPU: {s}", .{gpu_caps.getDeviceName()});
         log.info("  Vendor: {s}, AMD Arch: {s}", .{ @tagName(gpu_caps.vendor), @tagName(gpu_caps.amd_arch) });
-        log.info("  FP16: {}, Subgroup size: {}", .{ gpu_caps.fp16_supported, gpu_caps.subgroup_size });
+        log.info("  Extensions checked: FP16={}, BF16={}, Subgroup size: {}", .{ gpu_caps.fp16_supported, gpu_caps.bf16_supported, gpu_caps.subgroup_size });
 
         // Create logical device with compute queue
         const queue_priority: f32 = 1.0;
@@ -169,12 +177,16 @@ pub const VulkanContext = struct {
         defer allocator.free(devices);
         _ = try vki.enumeratePhysicalDevices(instance, &device_count, devices.ptr);
 
-        // Find device with compute queue, prefer discrete GPU
+        // Find Intel GPU with compute queue (vendor ID 0x8086)
         var best_device: ?vk.PhysicalDevice = null;
         var best_queue_family: u32 = 0;
-        var best_is_discrete = false;
 
         for (devices[0..device_count]) |pdev| {
+            const props = vki.getPhysicalDeviceProperties(pdev);
+
+            // Only consider Intel GPUs
+            if (props.vendor_id != 0x8086) continue;
+
             var queue_family_count: u32 = 0;
             vki.getPhysicalDeviceQueueFamilyProperties(pdev, &queue_family_count, null);
 
@@ -184,13 +196,11 @@ pub const VulkanContext = struct {
 
             for (queue_families[0..queue_family_count], 0..) |qf, idx| {
                 if (qf.queue_flags.compute_bit) {
-                    const props = vki.getPhysicalDeviceProperties(pdev);
+                    // Prefer discrete GPUs if multiple Intel GPUs
                     const is_discrete = props.device_type == .discrete_gpu;
-
-                    if (best_device == null or (is_discrete and !best_is_discrete)) {
+                    if (best_device == null or (is_discrete and best_device != null and vki.getPhysicalDeviceProperties(best_device.?).device_type != .discrete_gpu)) {
                         best_device = pdev;
                         best_queue_family = @intCast(idx);
-                        best_is_discrete = is_discrete;
                     }
                     break;
                 }
@@ -206,18 +216,22 @@ pub const VulkanContext = struct {
     }
 };
 
-/// Detect GPU vendor and architecture from device properties
-fn detectGpuCapabilities(props: vk.PhysicalDeviceProperties) GpuCapabilities {
+/// Detect GPU vendor and architecture from device properties and extensions
+fn detectGpuCapabilities(props: vk.PhysicalDeviceProperties, extensions: []vk.ExtensionProperties) GpuCapabilities {
     var caps = GpuCapabilities{
         .vendor = .other,
         .amd_arch = .unknown,
         .fp16_supported = false,
+        .bf16_supported = false,
         .subgroup_size = 32, // Default
         .device_name = undefined,
     };
 
     // Copy device name
     @memcpy(&caps.device_name, &props.device_name);
+
+    // Check for BF16 extension
+    caps.bf16_supported = hasExtension(extensions, "VK_KHR_shader_bfloat16");
 
     // Detect vendor from vendor ID
     // AMD: 0x1002, NVIDIA: 0x10DE, Intel: 0x8086, Apple: 0x106B
@@ -237,7 +251,7 @@ fn detectGpuCapabilities(props: vk.PhysicalDeviceProperties) GpuCapabilities {
         0x8086 => {
             caps.vendor = .intel;
             caps.subgroup_size = 16; // Intel EU width varies, 16 is common
-            caps.fp16_supported = true;
+            caps.fp16_supported = true; // Intel GPUs support FP16
         },
         0x106B => {
             caps.vendor = .apple;
@@ -248,6 +262,17 @@ fn detectGpuCapabilities(props: vk.PhysicalDeviceProperties) GpuCapabilities {
     }
 
     return caps;
+}
+
+/// Check if a Vulkan extension is supported
+fn hasExtension(extensions: []vk.ExtensionProperties, name: []const u8) bool {
+    for (extensions) |ext| {
+        const ext_name = std.mem.sliceTo(&ext.extension_name, 0);
+        if (std.mem.eql(u8, ext_name, name)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 /// Detect AMD GPU architecture from device ID
@@ -351,6 +376,7 @@ const apis: []const vk.ApiInfo = &.{
             .getPhysicalDeviceProperties = true,
             .getPhysicalDeviceQueueFamilyProperties = true,
             .getPhysicalDeviceMemoryProperties = true,
+            .enumerateDeviceExtensionProperties = true,
             .createDevice = true,
             .getDeviceProcAddr = true,
         },

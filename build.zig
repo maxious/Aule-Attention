@@ -6,7 +6,6 @@ pub fn build(b: *std.Build) void {
 
     // Options
     const enable_hip = b.option(bool, "hip", "Enable HIP backend") orelse false;
-    const spirv_tools_path = b.option([]const u8, "spirv-tools", "Path to spirv-tools bin directory (for spirv-as)");
     const options = b.addOptions();
     options.addOption(bool, "enable_hip", enable_hip);
 
@@ -133,21 +132,9 @@ pub fn build(b: *std.Build) void {
     copy_kv_paged_compile.addFileArg(b.path("shaders/copy_kv_to_paged.comp"));
 
     // --- Native BF16 Shaders (SPIR-V assembly, requires VK_KHR_shader_bfloat16) ---
-    // These use spirv-as instead of glslc since GLSL has no bf16 extension yet
-    // Use -Dspirv-tools=/path/to/bin if spirv-as is not in PATH
-    const spirv_as_cmd: []const u8 = if (spirv_tools_path) |p|
-        b.fmt("{s}/spirv-as", .{p})
-    else
-        "spirv-as";
-
-    const attention_bf16_native_compile = b.addSystemCommand(&.{ spirv_as_cmd, "--target-env", "vulkan1.3", "-o" });
-    const attention_bf16_native_spv = attention_bf16_native_compile.addOutputFileArg("attention_bf16_native.spv");
-    attention_bf16_native_compile.addFileArg(b.path("shaders/attention_bf16_native.spvasm"));
-
-    // Simple bf16 test shader
-    const test_bf16_native_compile = b.addSystemCommand(&.{ spirv_as_cmd, "--target-env", "vulkan1.3", "-o" });
-    const test_bf16_native_spv = test_bf16_native_compile.addOutputFileArg("test_bf16_native.spv");
-    test_bf16_native_compile.addFileArg(b.path("shaders/test_bf16_native.spvasm"));
+    // Use GLSL-compiled BF16 shader (emulated)
+    const attention_bf16_native_spv = b.path("shaders/attention_bf16.spv");
+    const test_bf16_native_spv = b.path("shaders/attention_bf16.spv"); // Dummy
     // --------------------------
 
     // Main library (shared)
@@ -165,7 +152,7 @@ pub fn build(b: *std.Build) void {
     lib.root_module.addAnonymousImport("attention_fwd_lse_spv", .{ .root_source_file = attention_fwd_lse_spv });
     lib.root_module.addAnonymousImport("spatial_sort_spv", .{ .root_source_file = spatial_sort_spv });
     lib.root_module.addAnonymousImport("attention_gravity_spv", .{ .root_source_file = attention_gravity_spv });
-    
+
     // Radix Imports
     lib.root_module.addAnonymousImport("radix_count_spv", .{ .root_source_file = radix_count_spv });
     lib.root_module.addAnonymousImport("radix_scan_spv", .{ .root_source_file = radix_scan_spv });
@@ -212,7 +199,7 @@ pub fn build(b: *std.Build) void {
     static_lib.root_module.addAnonymousImport("attention_fwd_lse_spv", .{ .root_source_file = attention_fwd_lse_spv });
     static_lib.root_module.addAnonymousImport("spatial_sort_spv", .{ .root_source_file = spatial_sort_spv });
     static_lib.root_module.addAnonymousImport("attention_gravity_spv", .{ .root_source_file = attention_gravity_spv });
-    
+
     // Radix Imports
     static_lib.root_module.addAnonymousImport("radix_count_spv", .{ .root_source_file = radix_count_spv });
     static_lib.root_module.addAnonymousImport("radix_scan_spv", .{ .root_source_file = radix_scan_spv });
@@ -329,7 +316,7 @@ pub fn build(b: *std.Build) void {
     benchmark.root_module.addImport("aule", static_lib.root_module);
     // Note: static_lib already has vulkan/libc linked, but we might need to ensure transient deps work
     // Ideally we link shared 'lib' or static 'static_lib' module.
-    
+
     const run_benchmark = b.addRunArtifact(benchmark);
     const benchmark_step = b.step("benchmark", "Run attention benchmark");
     benchmark_step.dependOn(&run_benchmark.step);

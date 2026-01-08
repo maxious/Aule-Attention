@@ -17,11 +17,12 @@ pub const GpuTensor = struct {
     pub const DType = enum {
         f32,
         f16,
+        bf16,
 
         pub fn size(self: DType) usize {
             return switch (self) {
                 .f32 => 4,
-                .f16 => 2,
+                .f16, .bf16 => 2,
             };
         }
     };
@@ -79,6 +80,19 @@ pub const GpuTensor = struct {
         @memcpy(gpu_slice, data);
     }
 
+    /// Upload 16-bit data (FP16 or BF16)
+    pub fn upload_u16(self: *Self, data: []const u16) !void {
+        if (data.len != self.element_count) {
+            return error.SizeMismatch;
+        }
+        if (self.dtype != .f16 and self.dtype != .bf16) {
+            return error.DTypeMismatch;
+        }
+
+        const gpu_slice = self.buffer.getMappedSlice(u16);
+        @memcpy(gpu_slice, data);
+    }
+
     /// Download data from GPU to CPU
     pub fn download(self: *const Self, output: []f32) !void {
         if (output.len != self.element_count) {
@@ -89,6 +103,19 @@ pub const GpuTensor = struct {
         }
 
         const gpu_slice = self.buffer.getMappedSlice(f32);
+        @memcpy(output, gpu_slice);
+    }
+
+    /// Download 16-bit data (FP16 or BF16)
+    pub fn download_u16(self: *const Self, output: []u16) !void {
+        if (output.len != self.element_count) {
+            return error.SizeMismatch;
+        }
+        if (self.dtype != .f16 and self.dtype != .bf16) {
+            return error.DTypeMismatch;
+        }
+
+        const gpu_slice = self.buffer.getMappedSlice(u16);
         @memcpy(output, gpu_slice);
     }
 
