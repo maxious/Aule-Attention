@@ -1,0 +1,217 @@
+; SPIR-V Assembly: Native BFloat16 Attention Dot Product Kernel
+; 
+; This shader demonstrates native bf16 with VK_KHR_shader_bfloat16:
+;   - Loads Q, K vectors as bf16 from storage buffers  
+;   - Computes dot product using native bf16 OpDot (BFloat16DotProductKHR)
+;   - Scales result and stores as bf16
+;
+; Layout:
+;   Binding 0: Q buffer (bf16) - [batch * heads * seq_len * head_dim]
+;   Binding 1: K buffer (bf16) - [batch * heads * key_len * head_dim]  
+;   Binding 2: Output scores (bf16) - [batch * heads * seq_len * key_len]
+;   Push constants: batch_size, num_heads, seq_len, key_len, head_dim, scale
+
+               OpCapability Shader
+               OpCapability StorageBuffer16BitAccess
+               OpCapability BFloat16TypeKHR
+               OpCapability BFloat16DotProductKHR
+               OpExtension "SPV_KHR_bfloat16"
+               OpExtension "SPV_KHR_16bit_storage"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint GLCompute %main "main" %gl_GlobalInvocationID %gl_WorkGroupID %Q_buf %K_buf %out_buf %push_constants
+               OpExecutionMode %main LocalSize 32 1 1
+
+               ; Decorations for builtins
+               OpDecorate %gl_GlobalInvocationID BuiltIn GlobalInvocationId
+               OpDecorate %gl_WorkGroupID BuiltIn WorkgroupId
+
+               ; Buffer bindings
+               OpDecorate %Q_buf DescriptorSet 0
+               OpDecorate %Q_buf Binding 0
+               OpDecorate %K_buf DescriptorSet 0
+               OpDecorate %K_buf Binding 1
+               OpDecorate %out_buf DescriptorSet 0
+               OpDecorate %out_buf Binding 2
+
+               ; Buffer block decorations
+               OpDecorate %QBlock Block
+               OpMemberDecorate %QBlock 0 Offset 0
+               OpDecorate %_runtimearr_bf16_q ArrayStride 2
+
+               OpDecorate %KBlock Block
+               OpMemberDecorate %KBlock 0 Offset 0
+               OpDecorate %_runtimearr_bf16_k ArrayStride 2
+
+               OpDecorate %OutBlock Block
+               OpMemberDecorate %OutBlock 0 Offset 0
+               OpDecorate %_runtimearr_bf16_out ArrayStride 2
+
+               ; Push constant block
+               OpDecorate %PushConstBlock Block
+               OpMemberDecorate %PushConstBlock 0 Offset 0   ; batch_size
+               OpMemberDecorate %PushConstBlock 1 Offset 4   ; num_heads
+               OpMemberDecorate %PushConstBlock 2 Offset 8   ; seq_len
+               OpMemberDecorate %PushConstBlock 3 Offset 12  ; key_len
+               OpMemberDecorate %PushConstBlock 4 Offset 16  ; head_dim
+               OpMemberDecorate %PushConstBlock 5 Offset 20  ; scale (float)
+
+       ; Base types
+       %void = OpTypeVoid
+   %voidfunc = OpTypeFunction %void
+      %float = OpTypeFloat 32
+       %uint = OpTypeInt 32 0
+        %int = OpTypeInt 32 1
+       %bool = OpTypeBool
+
+       ; Constants
+     %uint_0 = OpConstant %uint 0
+     %uint_1 = OpConstant %uint 1
+     %uint_2 = OpConstant %uint 2
+     %uint_3 = OpConstant %uint 3
+     %uint_4 = OpConstant %uint 4
+     %uint_5 = OpConstant %uint 5
+    %uint_32 = OpConstant %uint 32
+   %float_0 = OpConstant %float 0.0
+
+     %v3uint = OpTypeVector %uint 3
+%ptr_v3uint = OpTypePointer Input %v3uint
+  %ptr_uint = OpTypePointer Input %uint
+
+       ; BFloat16 type
+       %bf16 = OpTypeFloat 16 BFloat16KHR
+     %bf16v4 = OpTypeVector %bf16 4
+
+       ; Runtime arrays
+%_runtimearr_bf16_q = OpTypeRuntimeArray %bf16
+%_runtimearr_bf16_k = OpTypeRuntimeArray %bf16
+%_runtimearr_bf16_out = OpTypeRuntimeArray %bf16
+
+       ; Buffer structs
+     %QBlock = OpTypeStruct %_runtimearr_bf16_q
+     %KBlock = OpTypeStruct %_runtimearr_bf16_k
+   %OutBlock = OpTypeStruct %_runtimearr_bf16_out
+
+       ; Push constant struct
+%PushConstBlock = OpTypeStruct %uint %uint %uint %uint %uint %float
+
+       ; Pointers
+ %ptr_QBlock = OpTypePointer StorageBuffer %QBlock
+ %ptr_KBlock = OpTypePointer StorageBuffer %KBlock
+%ptr_OutBlock = OpTypePointer StorageBuffer %OutBlock
+%ptr_bf16_sb = OpTypePointer StorageBuffer %bf16
+%ptr_PushConst = OpTypePointer PushConstant %PushConstBlock
+%ptr_uint_pc = OpTypePointer PushConstant %uint
+%ptr_float_pc = OpTypePointer PushConstant %float
+
+       ; Global variables
+%gl_GlobalInvocationID = OpVariable %ptr_v3uint Input
+%gl_WorkGroupID = OpVariable %ptr_v3uint Input
+      %Q_buf = OpVariable %ptr_QBlock StorageBuffer
+      %K_buf = OpVariable %ptr_KBlock StorageBuffer
+    %out_buf = OpVariable %ptr_OutBlock StorageBuffer
+%push_constants = OpVariable %ptr_PushConst PushConstant
+
+       %main = OpFunction %void None %voidfunc
+      %entry = OpLabel
+
+               ; Load push constants
+  %pc_batch_ptr = OpAccessChain %ptr_uint_pc %push_constants %uint_0
+     %batch_size = OpLoad %uint %pc_batch_ptr
+  %pc_heads_ptr = OpAccessChain %ptr_uint_pc %push_constants %uint_1
+      %num_heads = OpLoad %uint %pc_heads_ptr
+%pc_seq_len_ptr = OpAccessChain %ptr_uint_pc %push_constants %uint_2
+       %seq_len = OpLoad %uint %pc_seq_len_ptr
+%pc_key_len_ptr = OpAccessChain %ptr_uint_pc %push_constants %uint_3
+       %key_len = OpLoad %uint %pc_key_len_ptr
+%pc_head_dim_ptr = OpAccessChain %ptr_uint_pc %push_constants %uint_4
+      %head_dim = OpLoad %uint %pc_head_dim_ptr
+ %pc_scale_ptr = OpAccessChain %ptr_float_pc %push_constants %uint_5
+         %scale = OpLoad %float %pc_scale_ptr
+
+               ; Get global invocation ID
+    %gid_x_ptr = OpAccessChain %ptr_uint %gl_GlobalInvocationID %uint_0
+         %gid_x = OpLoad %uint %gid_x_ptr  ; key position (k)
+    %gid_y_ptr = OpAccessChain %ptr_uint %gl_GlobalInvocationID %uint_1
+         %gid_y = OpLoad %uint %gid_y_ptr  ; query position (i)
+    %gid_z_ptr = OpAccessChain %ptr_uint %gl_GlobalInvocationID %uint_2
+         %gid_z = OpLoad %uint %gid_z_ptr  ; batch*head index
+
+               ; Bounds check
+      %k_valid = OpULessThan %bool %gid_x %key_len
+      %i_valid = OpULessThan %bool %gid_y %seq_len
+  %total_heads = OpIMul %uint %batch_size %num_heads
+     %bh_valid = OpULessThan %bool %gid_z %total_heads
+    %ik_valid = OpLogicalAnd %bool %k_valid %i_valid
+   %all_valid = OpLogicalAnd %bool %ik_valid %bh_valid
+               OpSelectionMerge %end_if None
+               OpBranchConditional %all_valid %do_work %end_if
+
+     %do_work = OpLabel
+
+               ; Compute Q offset: gid_z * seq_len * head_dim + gid_y * head_dim
+    %q_stride1 = OpIMul %uint %seq_len %head_dim
+    %q_base = OpIMul %uint %gid_z %q_stride1
+    %q_row_off = OpIMul %uint %gid_y %head_dim
+    %q_offset = OpIAdd %uint %q_base %q_row_off
+
+               ; Compute K offset: gid_z * key_len * head_dim + gid_x * head_dim
+    %k_stride1 = OpIMul %uint %key_len %head_dim
+    %k_base = OpIMul %uint %gid_z %k_stride1
+    %k_row_off = OpIMul %uint %gid_x %head_dim
+    %k_offset = OpIAdd %uint %k_base %k_row_off
+
+               ; Accumulate dot product in f32
+               ; Loop over head_dim
+        %acc_init = OpCopyObject %float %float_0
+               OpBranch %loop_header
+
+%loop_header = OpLabel
+         %acc = OpPhi %float %acc_init %do_work %acc_next %loop_body
+           %d = OpPhi %uint %uint_0 %do_work %d_next %loop_body
+    %loop_cond = OpULessThan %bool %d %head_dim
+               OpLoopMerge %loop_end %loop_body None
+               OpBranchConditional %loop_cond %loop_body %loop_end
+
+  %loop_body = OpLabel
+               ; Load Q[q_offset + d]
+       %q_idx = OpIAdd %uint %q_offset %d
+       %q_ptr = OpAccessChain %ptr_bf16_sb %Q_buf %uint_0 %q_idx
+        %q_bf = OpLoad %bf16 %q_ptr
+        %q_f32 = OpFConvert %float %q_bf
+
+               ; Load K[k_offset + d]  
+       %k_idx = OpIAdd %uint %k_offset %d
+       %k_ptr = OpAccessChain %ptr_bf16_sb %K_buf %uint_0 %k_idx
+        %k_bf = OpLoad %bf16 %k_ptr
+        %k_f32 = OpFConvert %float %k_bf
+
+               ; Accumulate: acc += q * k
+       %prod = OpFMul %float %q_f32 %k_f32
+    %acc_next = OpFAdd %float %acc %prod
+    
+               ; Increment d
+      %d_next = OpIAdd %uint %d %uint_1
+               OpBranch %loop_header
+
+   %loop_end = OpLabel
+               ; Apply scale
+   %scaled_acc = OpFMul %float %acc %scale
+
+               ; Convert to bf16
+   %result_bf = OpFConvert %bf16 %scaled_acc
+
+               ; Compute output offset: gid_z * seq_len * key_len + gid_y * key_len + gid_x
+    %o_stride1 = OpIMul %uint %seq_len %key_len
+    %o_base = OpIMul %uint %gid_z %o_stride1
+    %o_row_off = OpIMul %uint %gid_y %key_len
+    %o_offset1 = OpIAdd %uint %o_base %o_row_off
+    %o_offset = OpIAdd %uint %o_offset1 %gid_x
+
+               ; Store result
+     %out_ptr = OpAccessChain %ptr_bf16_sb %out_buf %uint_0 %o_offset
+               OpStore %out_ptr %result_bf
+               OpBranch %end_if
+
+     %end_if = OpLabel
+               OpReturn
+               OpFunctionEnd

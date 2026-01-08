@@ -6,6 +6,7 @@ pub fn build(b: *std.Build) void {
 
     // Options
     const enable_hip = b.option(bool, "hip", "Enable HIP backend") orelse false;
+    const spirv_tools_path = b.option([]const u8, "spirv-tools", "Path to spirv-tools bin directory (for spirv-as)");
     const options = b.addOptions();
     options.addOption(bool, "enable_hip", enable_hip);
 
@@ -130,6 +131,23 @@ pub fn build(b: *std.Build) void {
     const copy_kv_paged_compile = b.addSystemCommand(&.{ "glslc", "-O", "--target-env=vulkan1.2", "-o" });
     const copy_kv_paged_spv = copy_kv_paged_compile.addOutputFileArg("copy_kv_to_paged.spv");
     copy_kv_paged_compile.addFileArg(b.path("shaders/copy_kv_to_paged.comp"));
+
+    // --- Native BF16 Shaders (SPIR-V assembly, requires VK_KHR_shader_bfloat16) ---
+    // These use spirv-as instead of glslc since GLSL has no bf16 extension yet
+    // Use -Dspirv-tools=/path/to/bin if spirv-as is not in PATH
+    const spirv_as_cmd: []const u8 = if (spirv_tools_path) |p|
+        b.fmt("{s}/spirv-as", .{p})
+    else
+        "spirv-as";
+
+    const attention_bf16_native_compile = b.addSystemCommand(&.{ spirv_as_cmd, "--target-env", "vulkan1.3", "-o" });
+    const attention_bf16_native_spv = attention_bf16_native_compile.addOutputFileArg("attention_bf16_native.spv");
+    attention_bf16_native_compile.addFileArg(b.path("shaders/attention_bf16_native.spvasm"));
+
+    // Simple bf16 test shader
+    const test_bf16_native_compile = b.addSystemCommand(&.{ spirv_as_cmd, "--target-env", "vulkan1.3", "-o" });
+    const test_bf16_native_spv = test_bf16_native_compile.addOutputFileArg("test_bf16_native.spv");
+    test_bf16_native_compile.addFileArg(b.path("shaders/test_bf16_native.spvasm"));
     // --------------------------
 
     // Main library (shared)
@@ -165,6 +183,10 @@ pub fn build(b: *std.Build) void {
     // Paged attention shaders
     lib.root_module.addAnonymousImport("attention_paged_spv", .{ .root_source_file = attention_paged_spv });
     lib.root_module.addAnonymousImport("copy_kv_to_paged_spv", .{ .root_source_file = copy_kv_paged_spv });
+
+    // Native BF16 shaders (SPIR-V assembly, requires VK_KHR_shader_bfloat16)
+    lib.root_module.addAnonymousImport("attention_bf16_native_spv", .{ .root_source_file = attention_bf16_native_spv });
+    lib.root_module.addAnonymousImport("test_bf16_native_spv", .{ .root_source_file = test_bf16_native_spv });
 
     // Link Vulkan on native builds only - cross-compilation uses runtime dynamic loading
     const is_native = target.query.isNative();
@@ -208,6 +230,10 @@ pub fn build(b: *std.Build) void {
     // Paged attention shaders (static)
     static_lib.root_module.addAnonymousImport("attention_paged_spv", .{ .root_source_file = attention_paged_spv });
     static_lib.root_module.addAnonymousImport("copy_kv_to_paged_spv", .{ .root_source_file = copy_kv_paged_spv });
+
+    // Native BF16 shaders (static)
+    static_lib.root_module.addAnonymousImport("attention_bf16_native_spv", .{ .root_source_file = attention_bf16_native_spv });
+    static_lib.root_module.addAnonymousImport("test_bf16_native_spv", .{ .root_source_file = test_bf16_native_spv });
 
     static_lib.linkSystemLibrary("vulkan");
     static_lib.linkLibC();
