@@ -131,10 +131,9 @@ pub fn build(b: *std.Build) void {
     const copy_kv_paged_spv = copy_kv_paged_compile.addOutputFileArg("copy_kv_to_paged.spv");
     copy_kv_paged_compile.addFileArg(b.path("shaders/copy_kv_to_paged.comp"));
 
-    // --- Native BF16 Shaders (SPIR-V assembly, requires VK_KHR_shader_bfloat16) ---
+    // --- BF16 Shaders (Emulated via GLSL) ---
     // Use GLSL-compiled BF16 shader (emulated)
-    const attention_bf16_native_spv = b.path("shaders/attention_bf16.spv");
-    const test_bf16_native_spv = b.path("shaders/attention_bf16.spv"); // Dummy
+    const attention_bf16_spv = b.path("shaders/attention_bf16.spv");
     // --------------------------
 
     // Main library (shared)
@@ -171,9 +170,8 @@ pub fn build(b: *std.Build) void {
     lib.root_module.addAnonymousImport("attention_paged_spv", .{ .root_source_file = attention_paged_spv });
     lib.root_module.addAnonymousImport("copy_kv_to_paged_spv", .{ .root_source_file = copy_kv_paged_spv });
 
-    // Native BF16 shaders (SPIR-V assembly, requires VK_KHR_shader_bfloat16)
-    lib.root_module.addAnonymousImport("attention_bf16_native_spv", .{ .root_source_file = attention_bf16_native_spv });
-    lib.root_module.addAnonymousImport("test_bf16_native_spv", .{ .root_source_file = test_bf16_native_spv });
+    // BF16 shaders (emulated)
+    lib.root_module.addAnonymousImport("attention_bf16_spv", .{ .root_source_file = attention_bf16_spv });
 
     // Link Vulkan on native builds only - cross-compilation uses runtime dynamic loading
     const is_native = target.query.isNative();
@@ -218,9 +216,8 @@ pub fn build(b: *std.Build) void {
     static_lib.root_module.addAnonymousImport("attention_paged_spv", .{ .root_source_file = attention_paged_spv });
     static_lib.root_module.addAnonymousImport("copy_kv_to_paged_spv", .{ .root_source_file = copy_kv_paged_spv });
 
-    // Native BF16 shaders (static)
-    static_lib.root_module.addAnonymousImport("attention_bf16_native_spv", .{ .root_source_file = attention_bf16_native_spv });
-    static_lib.root_module.addAnonymousImport("test_bf16_native_spv", .{ .root_source_file = test_bf16_native_spv });
+    // BF16 shaders (emulated) (static)
+    static_lib.root_module.addAnonymousImport("attention_bf16_spv", .{ .root_source_file = attention_bf16_spv });
 
     static_lib.linkSystemLibrary("vulkan");
     static_lib.linkLibC();

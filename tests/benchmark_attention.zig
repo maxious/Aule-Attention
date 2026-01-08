@@ -1,6 +1,8 @@
 const std = @import("std");
 const aule = @import("aule");
 const Attention = aule.Attention;
+const ShaderVariant = aule.ShaderVariant;
+const DType = aule.DType;
 
 pub fn main() !void {
     // Setup allocator
@@ -12,53 +14,81 @@ pub fn main() !void {
     std.debug.print("Initializing aule-attention...\n", .{});
     var attn = try Attention.init(allocator);
     defer attn.deinit();
-    var ctx = &attn.context;
+    const ctx = &attn.context;
 
-    // Configuration (Back to larger size)
+    // Configuration
     const batch = 4;
     const heads = 8;
-    const seq = 512;
+    const seq = 1024;
     const dim = 64;
-    const shape = [4]u32{batch, heads, seq, dim};
+
+    std.debug.print("Benchmarking config: B={} H={} S={} D={}\n", .{ batch, heads, seq, dim });
+
+    // 1. Benchmark FP32 (Fast)
+    try runBenchmark(ctx, allocator, batch, heads, seq, dim, .f32, .fast, "FP32 (Fast)");
+
+    // 2. Benchmark BF16
+    try runBenchmark(ctx, allocator, batch, heads, seq, dim, .bf16, .bf16, "BF16 (Emulated)");
+}
+
+fn runBenchmark(ctx: *aule.AttentionContext, allocator: std.mem.Allocator, batch: u32, heads: u32, seq: u32, dim: u32, dtype: DType, variant: ShaderVariant, name: []const u8) !void {
+    std.debug.print("\n=== Benchmarking {s} ===\n", .{name});
+
+    const shape = [4]u32{ batch, heads, seq, dim };
     const total_elements = batch * heads * seq * dim;
-    
-    std.debug.print("Benchmarking config: B={} H={} S={} D={}\n", .{batch, heads, seq, dim});
 
-    // Alloc Host Memory for initialization
-    const host_data = try allocator.alloc(f32, total_elements);
-    defer allocator.free(host_data);
-    @memset(host_data, 0.1);
+    // Set Shader Variant
+    if (ctx.vulkan_ctx) |engine| {
+        try engine.setShaderVariant(variant);
+    } else {
+        std.debug.print("Not using Vulkan backend, skipping variant set\n", .{});
+        return;
+    }
 
-    // 1. Setup GPU Tensors (Once)
-    std.debug.print("Allocating GPU tensors...\n", .{});
-    var q_t = try ctx.createTensor(shape);
+    // Allocate GPU tensors
+    var q_t = try ctx.createTensor(shape, dtype);
     defer ctx.destroyTensor(&q_t);
-    var k_t = try ctx.createTensor(shape);
+    var k_t = try ctx.createTensor(shape, dtype);
     defer ctx.destroyTensor(&k_t);
-    var v_t = try ctx.createTensor(shape);
+    var v_t = try ctx.createTensor(shape, dtype);
     defer ctx.destroyTensor(&v_t);
-    var o_t = try ctx.createTensor(shape);
+    var o_t = try ctx.createTensor(shape, dtype);
     defer ctx.destroyTensor(&o_t);
 
-    // 2. Upload (Once)
-    std.debug.print("Uploading data...\n", .{});
-    try ctx.upload(&q_t, host_data);
-    try ctx.upload(&k_t, host_data);
-    try ctx.upload(&v_t, host_data);
+    // Upload dummy data
+    if (dtype == .f32) {
+        const host_data = try allocator.alloc(f32, total_elements);
+        defer allocator.free(host_data);
+        @memset(host_data, 0.1);
+        try ctx.upload(&q_t, host_data);
+        try ctx.upload(&k_t, host_data);
+        try ctx.upload(&v_t, host_data);
+    } else {
+        // For BF16/FP16, we upload u16 data
+        const host_data = try allocator.alloc(u16, total_elements);
+        defer allocator.free(host_data);
+        @memset(host_data, 0x3F80); // 1.0 in bf16 (roughly) or fp16, doesn't matter for perf
+        try ctx.upload_u16(&q_t, host_data);
+        try ctx.upload_u16(&k_t, host_data);
+        try ctx.upload_u16(&v_t, host_data);
+    }
 
     // Warmup
-    std.debug.print("Warming up kernel...\n", .{});
+    std.debug.print("Warming up...\n", .{});
     try ctx.attention(&q_t, &k_t, &v_t, &o_t, null, null, false, -1);
+    try ctx.vulkan_ctx.?.synchronize();
 
-    // Benchmark Loop (Compute Only)
+    // Benchmark Loop
     const iterations = 50;
     var timer = try std.time.Timer.start();
-    
-    std.debug.print("Running {} iterations (Compute only)...\n", .{iterations});
+
+    std.debug.print("Running {} iterations...\n", .{iterations});
     const start = timer.read();
     for (0..iterations) |_| {
-    try ctx.attention(&q_t, &k_t, &v_t, &o_t, null, null, false, -1);
+        try ctx.attention(&q_t, &k_t, &v_t, &o_t, null, null, false, -1);
     }
+    // Wait for idle at the end
+    try ctx.vulkan_ctx.?.synchronize();
     const end = timer.read();
 
     const total_ns = end - start;
@@ -66,12 +96,12 @@ pub fn main() !void {
 
     // Calculate TFLOPS
     // Ops = 4 * B * H * S^2 * D
-    const ops_per_iter = 4.0 * @as(f64, @floatFromInt(batch)) * 
-                             @as(f64, @floatFromInt(heads)) * 
-                             @as(f64, @floatFromInt(seq)) * 
-                             @as(f64, @floatFromInt(seq)) * 
-                             @as(f64, @floatFromInt(dim));
-    
+    const ops_per_iter = 4.0 * @as(f64, @floatFromInt(batch)) *
+        @as(f64, @floatFromInt(heads)) *
+        @as(f64, @floatFromInt(seq)) *
+        @as(f64, @floatFromInt(seq)) *
+        @as(f64, @floatFromInt(dim));
+
     const tflops = (ops_per_iter) / (avg_ms / 1000.0) / 1_000_000_000_000.0;
 
     std.debug.print("--------------------------------------------------\n", .{});

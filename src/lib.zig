@@ -1,10 +1,13 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const Backend = @import("backends/backend.zig");
-const AttentionContext = Backend.AttentionContext;
+pub const AttentionContext = Backend.AttentionContext;
 const Tensor = Backend.Tensor;
 
 pub const AttentionRef = @import("attention_ref.zig").AttentionRef;
+
+// Export DType for external use (benchmarks etc)
+pub const DType = @import("gpu_tensor.zig").GpuTensor.DType;
 
 const log = std.log.scoped(.aule);
 
@@ -49,8 +52,8 @@ const attention_f32_fast_spv = @embedFile("attention_f32_fast_spv");
 const attention_paged_spv = @embedFile("attention_paged_spv");
 const copy_kv_to_paged_spv = @embedFile("copy_kv_to_paged_spv");
 
-// BF16 shader (native)
-const attention_bf16_spv = @embedFile("attention_bf16_native_spv");
+// BF16 shader (emulated)
+const attention_bf16_spv = @embedFile("attention_bf16_spv");
 
 // Re-export ShaderVariant for external use
 pub const ShaderVariant = @import("attention_gpu.zig").ShaderVariant;
@@ -1126,7 +1129,26 @@ pub const Attention = struct {
 
     pub fn init(allocator: std.mem.Allocator) !Self {
         // We use the embedded shaders from file scope
-        const context = try AttentionContext.init(allocator, attention_f32_spv, attention_amd_spv);
+        const context = try AttentionContext.initWithBackward(
+            allocator,
+            attention_f32_spv,
+            attention_amd_spv,
+            attention_fwd_lse_spv,
+            attention_bwd_spv,
+            spatial_sort_spv,
+            attention_gravity_spv,
+            radix_count_spv,
+            radix_scan_spv,
+            radix_scatter_spv,
+            iota_spv,
+            magnitude_sort_spv,
+            attention_f32_fast_spv,
+            attention_f16_spv,
+            attention_f16_amd_spv,
+            attention_bf16_spv,
+            attention_paged_spv,
+            copy_kv_to_paged_spv,
+        );
         return Self{
             .context = context,
             .allocator = allocator,

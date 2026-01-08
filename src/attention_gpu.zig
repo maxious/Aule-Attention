@@ -123,13 +123,11 @@ pub const AttentionEngine = struct {
 
         var bf16_pipeline: ?AttentionPipeline = null;
         if (bf16_shader) |s| {
-            if (ctx.gpu_caps.bf16_supported) {
-                log.info("BF16 extension detected, attempting to load BF16 shader", .{});
-                bf16_pipeline = try AttentionPipeline.init(ctx, s);
-                log.info("BF16 shader loaded successfully", .{});
-            } else {
-                log.warn("BF16 shader provided but VK_KHR_shader_bfloat16 not supported", .{});
-            }
+            // Emulated BF16 shader works on all hardware (uses uint buffers)
+            // No need to check for VK_KHR_shader_bfloat16
+            log.info("Loading BF16 shader (emulated)", .{});
+            bf16_pipeline = try AttentionPipeline.init(ctx, s);
+            log.info("BF16 shader loaded successfully", .{});
         }
 
         var paged_pipeline: ?PagedAttentionPipeline = null;
