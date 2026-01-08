@@ -125,6 +125,7 @@ def benchmark_config(
         "fp16": 2,
         "fp16_amd": 3,
         "bf16": 4,
+        "coopmat": 5,  # cooperative matrix
     }
 
     variant = variant_map.get(dtype, 0)
@@ -312,6 +313,10 @@ def main():
         # Check for bf16 support
         if lib.aule_has_shader_variant(4) == 1:
             variants_to_test.append("bf16")
+
+        # Check for cooperative matrix support
+        if lib.aule_has_shader_variant(5) == 1:
+            variants_to_test.append("coopmat")
 
         print(f"Testing variants: {variants_to_test}")
 

@@ -131,7 +131,7 @@ pub fn build(b: *std.Build) void {
     const copy_kv_paged_spv = copy_kv_paged_compile.addOutputFileArg("copy_kv_to_paged.spv");
     copy_kv_paged_compile.addFileArg(b.path("shaders/copy_kv_to_paged.comp"));
 
-    const attention_coopmat_compile = b.addSystemCommand(&.{ "glslc", "-O", "--target-env=vulkan1.3", "-o" });
+    const attention_coopmat_compile = b.addSystemCommand(&.{ "glslangValidator", "-V", "--target-env", "spirv1.3", "-o" });
     const attention_coopmat_spv = attention_coopmat_compile.addOutputFileArg("attention_forward_f32_coopmat.spv");
     attention_coopmat_compile.addFileArg(b.path("shaders/attention_forward_f32_coopmat.comp"));
 

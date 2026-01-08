@@ -255,7 +255,7 @@ fn detectGpuCapabilities(props: vk.PhysicalDeviceProperties, extensions: []vk.Ex
         },
         0x8086 => {
             caps.vendor = .intel;
-            caps.subgroup_size = 16; // Intel EU width varies, 16 is common
+            caps.subgroup_size = 32; // Intel Arc uses 32-wide SIMD (vulkaninfo confirms)
             caps.fp16_supported = true; // Intel GPUs support FP16
         },
         0x106B => {
