@@ -58,9 +58,9 @@ def _find_library() -> Path:
     ]
 
     for path in candidates:
-            if os.path.exists(path):
-                logger.debug(f"Loading library from {path}")
-                return path
+        if os.path.exists(path):
+            logger.debug(f"Loading library from {path}")
+            return path
 
     raise RuntimeError(
         f"Could not find aule library ({lib_name}). "
@@ -71,6 +71,7 @@ def _find_library() -> Path:
 
 class AuleError(Exception):
     """Exception raised for aule library errors."""
+
     pass
 
 
@@ -89,7 +90,13 @@ class GpuTensor:
         >>> result = output.download()
     """
 
-    def __init__(self, aule: 'Aule', handle: int, shape: Tuple[int, ...], dtype: np.dtype = np.float32):
+    def __init__(
+        self,
+        aule: "Aule",
+        handle: int,
+        shape: Tuple[int, ...],
+        dtype: np.dtype = np.float32,
+    ):
         self._aule = aule
         self._handle = handle
         self._shape = shape
@@ -115,18 +122,18 @@ class GpuTensor:
     def upload(self, data: np.ndarray) -> None:
         """Upload data from CPU to GPU."""
         if data.size != self._size:
-            raise ValueError(f"Size mismatch: tensor has {self._size} elements, got {data.size}")
+            raise ValueError(
+                f"Size mismatch: tensor has {self._size} elements, got {data.size}"
+            )
 
         # Preserve bits!
         data = np.ascontiguousarray(data, dtype=self._dtype).ravel()
-        
+
         # Cast to float pointer because C API expects float*, but simply copies bits
         ptr = data.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
         result = self._aule._lib.aule_tensor_upload(
-            ctypes.c_uint64(self._handle),
-            ptr,
-            ctypes.c_uint32(self._size)
+            ctypes.c_uint64(self._handle), ptr, ctypes.c_uint32(self._size)
         )
         if result != 0:
             error = self._aule._lib.aule_get_error()
@@ -136,17 +143,15 @@ class GpuTensor:
         """Download data from GPU to CPU."""
         # Use underlying dtype of tensor
         # C API treats storage as f32, so we download into a buffer and view it
-        
+
         # Allocate buffer with matching size
         output = np.empty(self._size, dtype=self._dtype)
-        
+
         # Cast pointer to float* for API
         ptr = output.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
         result = self._aule._lib.aule_tensor_download(
-            ctypes.c_uint64(self._handle),
-            ptr,
-            ctypes.c_uint32(self._size)
+            ctypes.c_uint64(self._handle), ptr, ctypes.c_uint32(self._size)
         )
         if result != 0:
             error = self._aule._lib.aule_get_error()
@@ -245,13 +250,16 @@ class Aule:
             ctypes.c_uint32,  # num_heads
             ctypes.c_uint32,  # seq_len
             ctypes.c_uint32,  # head_dim
-            ctypes.c_int32,   # causal
+            ctypes.c_int32,  # causal
         ]
         self._lib.aule_attention_forward.restype = ctypes.c_int32
 
         # Tensor API
         self._lib.aule_tensor_create.argtypes = [
-            ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
         ]
         self._lib.aule_tensor_create.restype = ctypes.c_uint64
 
@@ -270,17 +278,23 @@ class Aule:
             pass
 
         self._lib.aule_tensor_upload.argtypes = [
-            ctypes.c_uint64, ctypes.POINTER(ctypes.c_float), ctypes.c_uint32
+            ctypes.c_uint64,
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.c_uint32,
         ]
         self._lib.aule_tensor_upload.restype = ctypes.c_int32
 
         self._lib.aule_tensor_download.argtypes = [
-            ctypes.c_uint64, ctypes.POINTER(ctypes.c_float), ctypes.c_uint32
+            ctypes.c_uint64,
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.c_uint32,
         ]
         self._lib.aule_tensor_download.restype = ctypes.c_int32
 
         self._lib.aule_tensor_download_u32.argtypes = [
-            ctypes.c_uint64, ctypes.POINTER(ctypes.c_uint32), ctypes.c_uint32
+            ctypes.c_uint64,
+            ctypes.POINTER(ctypes.c_uint32),
+            ctypes.c_uint32,
         ]
         self._lib.aule_tensor_download_u32.restype = ctypes.c_int32
 
@@ -289,28 +303,37 @@ class Aule:
 
         # GPU tensor attention (no copy)
         self._lib.aule_attention_forward_gpu.argtypes = [
-            ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64,
-            ctypes.c_uint64, ctypes.c_uint64,  # rot_cos, rot_sin
+            ctypes.c_uint64,
+            ctypes.c_uint64,
+            ctypes.c_uint64,
+            ctypes.c_uint64,
+            ctypes.c_uint64,
+            ctypes.c_uint64,  # rot_cos, rot_sin
             ctypes.c_int32,  # causal
             ctypes.c_int32,  # window_size (-1 for full attention)
         ]
         self._lib.aule_attention_forward_gpu.restype = ctypes.c_int32
 
         # Spatial Sort
-        self._lib.aule_spatial_sort.argtypes = [ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_uint32]
+        self._lib.aule_spatial_sort.argtypes = [
+            ctypes.c_uint64,
+            ctypes.c_uint64,
+            ctypes.c_uint64,
+            ctypes.c_uint32,
+        ]
         self._lib.aule_spatial_sort.restype = ctypes.c_int32
 
         # Gravity Attention
         self._lib.aule_attention_forward_gravity.argtypes = [
-            ctypes.c_uint64, # Q
-            ctypes.c_uint64, # K
-            ctypes.c_uint64, # V
-            ctypes.c_uint64, # O
-            ctypes.c_uint64, # Cos
-            ctypes.c_uint64, # Sin
-            ctypes.c_uint64, # Indices
+            ctypes.c_uint64,  # Q
+            ctypes.c_uint64,  # K
+            ctypes.c_uint64,  # V
+            ctypes.c_uint64,  # O
+            ctypes.c_uint64,  # Cos
+            ctypes.c_uint64,  # Sin
+            ctypes.c_uint64,  # Indices
             ctypes.c_int32,  # Causal
-            ctypes.c_uint32, # Max Attend (Top-k)
+            ctypes.c_uint32,  # Max Attend (Top-k)
             ctypes.c_int32,  # window_size (-1 for full attention)
         ]
         self._lib.aule_attention_forward_gravity.restype = ctypes.c_int32
@@ -335,6 +358,12 @@ class Aule:
         try:
             self._lib.aule_has_fp16.argtypes = []
             self._lib.aule_has_fp16.restype = ctypes.c_int32
+        except AttributeError:
+            pass
+
+        try:
+            self._lib.aule_has_cooperative_matrix.argtypes = []
+            self._lib.aule_has_cooperative_matrix.restype = ctypes.c_int32
         except AttributeError:
             pass
 
@@ -382,7 +411,7 @@ class Aule:
             ctypes.c_uint32,  # num_heads
             ctypes.c_uint32,  # seq_len
             ctypes.c_uint32,  # head_dim
-            ctypes.c_int32,   # causal
+            ctypes.c_int32,  # causal
         ]
         self._lib.aule_attention_forward_with_lse.restype = ctypes.c_int32
 
@@ -401,7 +430,7 @@ class Aule:
             ctypes.c_uint32,  # num_heads
             ctypes.c_uint32,  # seq_len
             ctypes.c_uint32,  # head_dim
-            ctypes.c_int32,   # causal
+            ctypes.c_int32,  # causal
         ]
         self._lib.aule_attention_backward.restype = ctypes.c_int32
 
@@ -414,7 +443,7 @@ class Aule:
             buffer = ctypes.create_string_buffer(256)
             result = self._lib.aule_get_device_name(buffer, 256)
             if result >= 0:
-                return buffer.value.decode('utf-8', errors='replace')
+                return buffer.value.decode("utf-8", errors="replace")
             return "Unknown"
         except AttributeError:
             return "Unknown"
@@ -452,6 +481,16 @@ class Aule:
             return False
 
     @property
+    def cooperative_matrix_supported(self) -> bool:
+        """Check if cooperative matrix extensions are supported."""
+        if not self._initialized:
+            return False
+        try:
+            return self._lib.aule_has_cooperative_matrix() == 1
+        except AttributeError:
+            return False
+
+    @property
     def subgroup_size(self) -> int:
         """Get the GPU subgroup/wavefront size (32 for NVIDIA, 64 for AMD)."""
         if not self._initialized:
@@ -468,6 +507,7 @@ class Aule:
             "vendor": self.vendor,
             "amd_optimized": self.is_amd_optimized,
             "fp16_supported": self.fp16_supported,
+            "cooperative_matrix_supported": self.cooperative_matrix_supported,
             "subgroup_size": self.subgroup_size,
             "shader_variant": self.shader_variant,
             "available_variants": self.available_shader_variants,
@@ -475,9 +515,11 @@ class Aule:
 
     # Shader variant names
     SHADER_BASELINE = 0  # Original 16x16 block, scalar loads
-    SHADER_FAST = 1      # Optimized 32x32 block, vec4 loads, block skipping
-    SHADER_FP16 = 2      # FP16 with FP32 accumulation
+    SHADER_FAST = 1  # Optimized 32x32 block, vec4 loads, block skipping
+    SHADER_FP16 = 2  # FP16 with FP32 accumulation (requires hardware support)
     SHADER_FP16_AMD = 3  # FP16 optimized for AMD 64-wide wavefronts
+    SHADER_BF16 = 4  # BF16 native processing
+    SHADER_COOPMAT = 5  # Cooperative matrix acceleration (VK_KHR_cooperative_matrix)
 
     @property
     def shader_variant(self) -> int:
@@ -493,7 +535,14 @@ class Aule:
     def shader_variant_name(self) -> str:
         """Get the name of the current shader variant."""
         variant = self.shader_variant
-        names = {0: "baseline", 1: "fast", 2: "fp16", 3: "fp16_amd"}
+        names = {
+            0: "baseline",
+            1: "fast",
+            2: "fp16",
+            3: "fp16_amd",
+            4: "bf16",
+            5: "coopmat",
+        }
         return names.get(variant, "unknown")
 
     @property
@@ -529,7 +578,9 @@ class Aule:
                 raise AuleError("Aule not initialized")
             elif result == -2:
                 names = {0: "baseline", 1: "fast", 2: "fp16", 3: "fp16_amd"}
-                raise AuleError(f"Shader variant '{names.get(variant, variant)}' not available")
+                raise AuleError(
+                    f"Shader variant '{names.get(variant, variant)}' not available"
+                )
         except AttributeError:
             raise AuleError("Shader variant selection not supported in this version")
 
@@ -568,7 +619,9 @@ class Aule:
         self._tensors.clear()
         self._tensor_cache.clear()
 
-    def tensor(self, shape: Tuple[int, int, int, int], dtype: np.dtype = np.float32) -> GpuTensor:
+    def tensor(
+        self, shape: Tuple[int, int, int, int], dtype: np.dtype = np.float32
+    ) -> GpuTensor:
         """
         Create a GPU tensor.
 
@@ -688,14 +741,18 @@ class Aule:
 
         # Validate shapes
         if query.shape[0] != key.shape[0]:
-             raise ValueError(f"Batch size must match. Q={query.shape}, K={key.shape}")
+            raise ValueError(f"Batch size must match. Q={query.shape}, K={key.shape}")
 
         if value.shape[0] != key.shape[0] or value.shape[2] != key.shape[2]:
-             raise ValueError(f"Value shape must match Key shape [B, H, S, D]. K={key.shape}, V={value.shape}")
-        
+            raise ValueError(
+                f"Value shape must match Key shape [B, H, S, D]. K={key.shape}, V={value.shape}"
+            )
+
         # Check for GQA (Q heads multiple of K heads)
         if query.shape[1] % key.shape[1] != 0:
-             raise ValueError(f"Num Q heads must be multiple of K heads. Q={query.shape}, K={key.shape}")
+            raise ValueError(
+                f"Num Q heads must be multiple of K heads. Q={query.shape}, K={key.shape}"
+            )
 
         if len(query.shape) != 4:
             raise ValueError(
@@ -722,40 +779,40 @@ class Aule:
         # Old simple path: result = self._lib.aule_attention_forward(...)
         # BUT aule_attention_forward (C API) does not support RoPE yet! only _gpu one does.
         # So if we have RoPE, we MUST use the Tensor API path.
-        
+
         if rot_cos is not None and rot_sin is not None:
             # Use Tensor API for RoPE support
             # This is slower due to malloc/upload overhead, but required until C API is updated.
             # TODO: Update aule_attention_forward C API to support RoPE.
-            
+
             # Check shapes
             if rot_cos.ndim != 4 or rot_sin.ndim != 4:
-                 # Auto-reshape if 3D [seq, dim] -> [1, 1, seq, dim]? 
-                 # For now assume user provides correct shape or we rely on tensor() validation.
-                 pass
+                # Auto-reshape if 3D [seq, dim] -> [1, 1, seq, dim]?
+                # For now assume user provides correct shape or we rely on tensor() validation.
+                pass
 
             q_gpu = self.tensor(query.shape)
             k_gpu = self.tensor(key.shape)
             v_gpu = self.tensor(value.shape)
             out_gpu = self.tensor(query.shape)
-            
-            # Check RoPE shape. 
-            # rot_cos might be [1,1,S,D/2] or broadcasted. 
+
+            # Check RoPE shape.
+            # rot_cos might be [1,1,S,D/2] or broadcasted.
             # GpuTensor expects 4 args for shape.
             # We need to manually construct GpuTensor for RoPE.
             # Use raw handle create? No, use self.tensor with manual shape.
-            
+
             # Use provided shape
             rc_shape = rot_cos.shape
             rs_shape = rot_sin.shape
-            
+
             # Ensure 4D
             if len(rc_shape) < 4:
                 # Pad with 1s
                 pad = (1,) * (4 - len(rc_shape))
                 rc_shape = pad + rc_shape
                 rot_cos = rot_cos.reshape(rc_shape)
-                
+
             if len(rs_shape) < 4:
                 pad = (1,) * (4 - len(rs_shape))
                 rs_shape = pad + rs_shape
@@ -763,21 +820,23 @@ class Aule:
 
             cos_gpu = self.tensor(rc_shape)
             sin_gpu = self.tensor(rs_shape)
-            
+
             q_gpu.upload(query)
             k_gpu.upload(key)
             v_gpu.upload(value)
             cos_gpu.upload(rot_cos)
             sin_gpu.upload(rot_sin)
-            
+
             # This calls the fast path
-            self.attention_gpu(q_gpu, k_gpu, v_gpu, out_gpu, cos_gpu, sin_gpu, causal, window_size)
-            
+            self.attention_gpu(
+                q_gpu, k_gpu, v_gpu, out_gpu, cos_gpu, sin_gpu, causal, window_size
+            )
+
             # Download result directly into output buffer if possible?
             # download() returns new array.
             result_tmp = out_gpu.download()
-            np.copyto(output, result_tmp) # Copy to user buffer
-            
+            np.copyto(output, result_tmp)  # Copy to user buffer
+
             # Cleanup happen automatically via __exit__ or explicit destroy?
             # Tensors are added to self._tensors and destroyed on close().
             # Since convienence function uses `with Aule()`, they will be cleaned up.
@@ -809,7 +868,9 @@ class Aule:
         v_gpu.upload(value)
 
         # Compute on GPU
-        self.attention_gpu(q_gpu, k_gpu, v_gpu, out_gpu, causal=causal, window_size=window_size)
+        self.attention_gpu(
+            q_gpu, k_gpu, v_gpu, out_gpu, causal=causal, window_size=window_size
+        )
 
         # Download result
         return out_gpu.download()
@@ -874,7 +935,11 @@ class Aule:
         lse_ptr = lse.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
         result = self._lib.aule_attention_forward_with_lse(
-            q_ptr, k_ptr, v_ptr, o_ptr, lse_ptr,
+            q_ptr,
+            k_ptr,
+            v_ptr,
+            o_ptr,
+            lse_ptr,
             ctypes.c_uint32(batch_size),
             ctypes.c_uint32(num_heads),
             ctypes.c_uint32(seq_len),
@@ -946,8 +1011,15 @@ class Aule:
         dv_ptr = grad_value.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
         result = self._lib.aule_attention_backward(
-            q_ptr, k_ptr, v_ptr, o_ptr, do_ptr, lse_ptr,
-            dq_ptr, dk_ptr, dv_ptr,
+            q_ptr,
+            k_ptr,
+            v_ptr,
+            o_ptr,
+            do_ptr,
+            lse_ptr,
+            dq_ptr,
+            dk_ptr,
+            dv_ptr,
             ctypes.c_uint32(batch_size),
             ctypes.c_uint32(num_heads),
             ctypes.c_uint32(seq_len),
@@ -962,20 +1034,17 @@ class Aule:
         return grad_query, grad_key, grad_value
 
     def spatial_sort(
-        self,
-        keys: np.ndarray,
-        values: np.ndarray,
-        sort_dim: int = 0
+        self, keys: np.ndarray, values: np.ndarray, sort_dim: int = 0
     ) -> np.ndarray:
         """
         Sort keys and values spatially based on projection onto sort_dim.
         Returns the sorted indices.
-        
+
         Args:
             keys: [batch, heads, seq, dim]
             values: [batch, heads, seq, dim]
             sort_dim: Dimension index to project onto (0..dim-1)
-            
+
         Returns:
             indices: [batch, heads, seq] (uint32)
         """
@@ -983,41 +1052,41 @@ class Aule:
             raise AuleError("Aule not initialized")
 
         if keys.shape != values.shape:
-             raise ValueError("Keys and Values must have same shape")
-             
+            raise ValueError("Keys and Values must have same shape")
+
         batch, heads, seq, dim = keys.shape
-        
+
         # Ensure contiguous
         keys = np.ascontiguousarray(keys, dtype=np.float32)
         values = np.ascontiguousarray(values, dtype=np.float32)
-        
+
         # Create tensors
         keys_gpu = self.tensor(keys.shape)
         vals_gpu = self.tensor(values.shape)
         # Indices are uint32, but GpuTensor stores them as float32 internally for now.
         # The C API expects a u32 tensor.
-        indices_shape = (batch, heads, seq, 1) # Indices are scalar per vector
+        indices_shape = (batch, heads, seq, 1)  # Indices are scalar per vector
         inds_gpu = self.tensor(indices_shape, dtype=np.uint32)
-        
+
         keys_gpu.upload(keys)
         vals_gpu.upload(values)
-        
+
         # Dispatch
         ret = self._lib.aule_spatial_sort(
             ctypes.c_uint64(keys_gpu.handle),
             ctypes.c_uint64(vals_gpu.handle),
             ctypes.c_uint64(inds_gpu.handle),
-            ctypes.c_uint32(sort_dim)
+            ctypes.c_uint32(sort_dim),
         )
-        
+
         if ret != 0:
             error = self._lib.aule_get_error()
             raise AuleError(f"Spatial sort failed: {error.decode()}")
-            
+
         # Download indices
         indices_np = inds_gpu.download()
         indices_np = indices_np.view(np.uint32)
-        
+
         return indices_np.reshape(batch, heads, seq)
 
     def attention_gravity(
@@ -1055,19 +1124,29 @@ class Aule:
 
         # Validate shapes
         if query.shape[0] != key.shape[0]:
-             raise ValueError(f"Batch size must match. Q={query.shape}, K={key.shape}")
+            raise ValueError(f"Batch size must match. Q={query.shape}, K={key.shape}")
         if value.shape[0] != key.shape[0] or value.shape[2] != key.shape[2]:
-             raise ValueError(f"Value shape must match Key shape [B, H, S, D]. K={key.shape}, V={value.shape}")
+            raise ValueError(
+                f"Value shape must match Key shape [B, H, S, D]. K={key.shape}, V={value.shape}"
+            )
         if query.shape[1] % key.shape[1] != 0:
-             raise ValueError(f"Num Q heads must be multiple of K heads. Q={query.shape}, K={key.shape}")
+            raise ValueError(
+                f"Num Q heads must be multiple of K heads. Q={query.shape}, K={key.shape}"
+            )
         if len(query.shape) != 4:
-            raise ValueError(f"Expected 4D tensors [batch, heads, seq, dim]. Got shape {query.shape}")
+            raise ValueError(
+                f"Expected 4D tensors [batch, heads, seq, dim]. Got shape {query.shape}"
+            )
         if indices.ndim != 3:
-            raise ValueError(f"Expected 3D indices tensor [batch, heads, seq]. Got shape {indices.shape}")
+            raise ValueError(
+                f"Expected 3D indices tensor [batch, heads, seq]. Got shape {indices.shape}"
+            )
         if indices.shape != key.shape[:3]:
             # Indices represent the sorted order of KEYS, so must match Key shape [B, H, S_K]
             # (assuming shared indices for all queries in a head)
-            raise ValueError(f"Indices shape {indices.shape} must match K's batch, heads, seq {key.shape[:3]}")
+            raise ValueError(
+                f"Indices shape {indices.shape} must match K's batch, heads, seq {key.shape[:3]}"
+            )
 
         # Default max_attend to key sequence length
         if max_attend is None:
@@ -1084,12 +1163,12 @@ class Aule:
         k_gpu = self.tensor(key.shape)
         v_gpu = self.tensor(value.shape)
         out_gpu = self.tensor(query.shape)
-        
+
         # Indices tensor needs to be 4D for GpuTensor, with last dim 1
         indices_4d_shape = indices.shape + (1,)
         indices_gpu = self.tensor(indices_4d_shape, dtype=np.uint32)
         indices_gpu.upload(indices.reshape(indices_4d_shape))
-        
+
         cos_gpu = None
         sin_gpu = None
         rot_cos_handle = 0
@@ -1114,12 +1193,12 @@ class Aule:
             sin_gpu = self.tensor(rs_shape)
             sin_gpu.upload(rot_sin)
             rot_sin_handle = sin_gpu.handle
-            
+
         # Upload data
         q_gpu.upload(query)
         k_gpu.upload(key)
         v_gpu.upload(value)
-            
+
         ret = self._lib.aule_attention_forward_gravity(
             ctypes.c_uint64(q_gpu.handle),
             ctypes.c_uint64(k_gpu.handle),
@@ -1132,11 +1211,11 @@ class Aule:
             ctypes.c_uint32(max_attend),
             ctypes.c_int32(window_size),
         )
-        
+
         if ret != 0:
             error = self._lib.aule_get_error()
             raise AuleError(f"Gravity Attention failed: {error.decode()}")
-            
+
         return out_gpu.download()
 
     def close(self):
@@ -1163,7 +1242,7 @@ class Aule:
         return False
 
     def __del__(self):
-        if hasattr(self, '_initialized') and self._initialized:
+        if hasattr(self, "_initialized") and self._initialized:
             self.close()
 
 
@@ -1194,7 +1273,9 @@ def attention(
     if _AULE_INSTANCE_SINGLETON is None:
         _AULE_INSTANCE_SINGLETON = Aule()
 
-    return _AULE_INSTANCE_SINGLETON.attention(query, key, value, causal=causal, window_size=window_size)
+    return _AULE_INSTANCE_SINGLETON.attention(
+        query, key, value, causal=causal, window_size=window_size
+    )
 
 
 def flash_attention(
@@ -1226,7 +1307,15 @@ def flash_attention(
     if _AULE_INSTANCE_SINGLETON is None:
         _AULE_INSTANCE_SINGLETON = Aule()
 
-    return _AULE_INSTANCE_SINGLETON.attention(query, key, value, rot_cos=rot_cos, rot_sin=rot_sin, causal=causal, window_size=window_size)
+    return _AULE_INSTANCE_SINGLETON.attention(
+        query,
+        key,
+        value,
+        rot_cos=rot_cos,
+        rot_sin=rot_sin,
+        causal=causal,
+        window_size=window_size,
+    )
 
 
 def supports_backward() -> bool:

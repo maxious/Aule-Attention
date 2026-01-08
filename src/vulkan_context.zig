@@ -29,6 +29,7 @@ pub const GpuCapabilities = struct {
     amd_arch: AmdArch,
     fp16_supported: bool,
     bf16_supported: bool,
+    cooperative_matrix_supported: bool,
     subgroup_size: u32, // Wavefront/warp size
     device_name: [256]u8,
 
@@ -109,7 +110,7 @@ pub const VulkanContext = struct {
         const gpu_caps = detectGpuCapabilities(device_properties, extensions);
         log.info("Selected GPU: {s}", .{gpu_caps.getDeviceName()});
         log.info("  Vendor: {s}, AMD Arch: {s}", .{ @tagName(gpu_caps.vendor), @tagName(gpu_caps.amd_arch) });
-        log.info("  Extensions checked: FP16={}, BF16={}, Subgroup size: {}", .{ gpu_caps.fp16_supported, gpu_caps.bf16_supported, gpu_caps.subgroup_size });
+        log.info("  Extensions checked: FP16={}, BF16={}, Coop Matrix={}, Subgroup size: {}", .{ gpu_caps.fp16_supported, gpu_caps.bf16_supported, gpu_caps.cooperative_matrix_supported, gpu_caps.subgroup_size });
 
         // Create logical device with compute queue
         const queue_priority: f32 = 1.0;
@@ -223,6 +224,7 @@ fn detectGpuCapabilities(props: vk.PhysicalDeviceProperties, extensions: []vk.Ex
         .amd_arch = .unknown,
         .fp16_supported = false,
         .bf16_supported = false,
+        .cooperative_matrix_supported = false,
         .subgroup_size = 32, // Default
         .device_name = undefined,
     };
@@ -232,6 +234,9 @@ fn detectGpuCapabilities(props: vk.PhysicalDeviceProperties, extensions: []vk.Ex
 
     // Check for BF16 extension
     caps.bf16_supported = hasExtension(extensions, "VK_KHR_shader_bfloat16");
+
+    // Check for cooperative matrix extension
+    caps.cooperative_matrix_supported = hasExtension(extensions, "VK_KHR_cooperative_matrix");
 
     // Detect vendor from vendor ID
     // AMD: 0x1002, NVIDIA: 0x10DE, Intel: 0x8086, Apple: 0x106B

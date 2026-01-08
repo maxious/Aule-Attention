@@ -27,7 +27,13 @@ pub fn main() !void {
     // 1. Benchmark FP32 (Fast)
     try runBenchmark(ctx, allocator, batch, heads, seq, dim, .f32, .fast, "FP32 (Fast)");
 
-    // 2. Benchmark BF16
+    // 2. Benchmark FP32 (Baseline)
+    try runBenchmark(ctx, allocator, batch, heads, seq, dim, .f32, .baseline, "FP32 (Baseline)");
+
+    // 3. Benchmark FP32 (Cooperative Matrix)
+    try runBenchmark(ctx, allocator, batch, heads, seq, dim, .f32, .coopmat, "FP32 (Cooperative Matrix)");
+
+    // 4. Benchmark BF16
     try runBenchmark(ctx, allocator, batch, heads, seq, dim, .bf16, .bf16, "BF16 (Emulated)");
 }
 

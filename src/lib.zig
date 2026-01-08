@@ -51,8 +51,8 @@ const attention_f32_fast_spv = @embedFile("attention_f32_fast_spv");
 // Paged attention shader (PagedAttention with block pool)
 const attention_paged_spv = @embedFile("attention_paged_spv");
 const copy_kv_to_paged_spv = @embedFile("copy_kv_to_paged_spv");
+const attention_forward_f32_coopmat_spv = @embedFile("attention_forward_f32_coopmat_spv");
 
-// BF16 shader (emulated)
 const attention_bf16_spv = @embedFile("attention_bf16_spv");
 
 // Re-export ShaderVariant for external use
@@ -86,6 +86,7 @@ export fn aule_init() callconv(.C) i32 {
         attention_f16_spv, // FP16 shader
         attention_f16_amd_spv, // FP16 AMD-optimized
         attention_bf16_spv, // BF16 native shader
+        attention_forward_f32_coopmat_spv, // Cooperative matrix shader
         attention_paged_spv, // PagedAttention shader
         copy_kv_to_paged_spv, // K/V copy shader for paged attention
     ) catch |err| {
@@ -203,6 +204,21 @@ export fn aule_has_fp16() callconv(.C) i32 {
     return -1;
 }
 
+export fn aule_has_cooperative_matrix() callconv(.C) i32 {
+    if (global_ctx) |*ctx| {
+        switch (ctx.backend) {
+            .vulkan => {
+                if (ctx.vulkan_ctx) |vctx| {
+                    return if (vctx.ctx.gpu_caps.cooperative_matrix_supported) 1 else 0;
+                }
+            },
+            .hip => return 0, // HIP doesn't support cooperative matrices
+            .cpu => return 0,
+        }
+    }
+    return -1;
+}
+
 /// Set shader variant for attention computation
 /// 0 = baseline, 1 = fast (optimized FP32), 2 = fp16, 3 = fp16_amd
 /// Returns 0 on success, -1 if not initialized, -2 if variant not available
@@ -240,6 +256,7 @@ export fn aule_has_shader_variant(variant: u8) callconv(.C) i32 {
                 .fp16 => if (engine.fp16_pipeline != null) @as(i32, 1) else 0,
                 .fp16_amd => if (engine.fp16_amd_pipeline != null) @as(i32, 1) else 0,
                 .bf16 => if (engine.bf16_pipeline != null) @as(i32, 1) else 0,
+                .coopmat => if (engine.coopmat_pipeline != null) @as(i32, 1) else 0,
             };
         }
     }
@@ -1146,6 +1163,7 @@ pub const Attention = struct {
             attention_f16_spv,
             attention_f16_amd_spv,
             attention_bf16_spv,
+            attention_forward_f32_coopmat_spv,
             attention_paged_spv,
             copy_kv_to_paged_spv,
         );
