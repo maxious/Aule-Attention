@@ -1,8 +1,8 @@
 const std = @import("std");
 const vk = @import("vulkan");
-const VulkanContext = @import("vulkan_context.zig").VulkanContext;
-const BufferManager = @import("buffer_manager.zig").BufferManager;
-const Buffer = @import("buffer_manager.zig").Buffer;
+const VulkanContext = @import("vulkan_context").VulkanContext;
+const BufferManager = @import("buffer_manager").BufferManager;
+const Buffer = @import("buffer_manager").Buffer;
 
 const log = std.log.scoped(.gravity_pipeline);
 
@@ -233,7 +233,7 @@ pub const GravityPipeline = struct {
         const valid_rope_size = if (rope_size > 0) rope_size else 64;
         const cos_buf = if (rot_cos_buffer) |b| b else q_buffer;
         const sin_buf = if (rot_sin_buffer) |b| b else q_buffer;
-        
+
         const buffer_infos = [_]vk.DescriptorBufferInfo{
             .{ .buffer = q_buffer, .offset = 0, .range = q_size },
             .{ .buffer = k_buffer, .offset = 0, .range = k_size },
@@ -243,7 +243,7 @@ pub const GravityPipeline = struct {
             .{ .buffer = sin_buf, .offset = 0, .range = valid_rope_size },
             .{ .buffer = indices_buffer, .offset = 0, .range = indices_size },
         };
-        
+
         const dummy_image_info = [_]vk.DescriptorImageInfo{undefined};
         const dummy_buffer_view = [_]vk.BufferView{.null_handle};
 

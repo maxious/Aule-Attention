@@ -14,7 +14,7 @@ test "BlockPool: basic allocation and deallocation" {
 
     const buffer_manager = BufferManager.init(&ctx);
 
-    var config = BlockPoolConfig{
+    const config = BlockPoolConfig{
         .initial_blocks = 512,
         .blocks_per_chunk = 512,
         .max_blocks = 2048,
@@ -52,7 +52,7 @@ test "BlockPool: growth when exhausted" {
 
     const buffer_manager = BufferManager.init(&ctx);
 
-    var config = BlockPoolConfig{
+    const config = BlockPoolConfig{
         .initial_blocks = 512,
         .blocks_per_chunk = 512,
         .max_blocks = 2048,
@@ -92,7 +92,7 @@ test "BlockPool: max blocks limit" {
 
     const buffer_manager = BufferManager.init(&ctx);
 
-    var config = BlockPoolConfig{
+    const config = BlockPoolConfig{
         .initial_blocks = 512,
         .blocks_per_chunk = 512,
         .max_blocks = 1024, // Low limit for test
@@ -115,7 +115,7 @@ test "BlockPool: max blocks limit" {
     }
 
     // Next allocation should fail
-    try testing.expectError(error.BlockPoolExhausted, pool.allocateBlock());
+    try testing.expectError(error.MaxBlocksReached, pool.allocateBlock());
 
     // Free all
     for (blocks.items) |b| {

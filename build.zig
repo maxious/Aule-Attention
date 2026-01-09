@@ -130,7 +130,41 @@ pub fn build(b: *std.Build) void {
     const copy_kv_paged_compile = b.addSystemCommand(&.{ "glslc", "-O", "--target-env=vulkan1.2", "-o" });
     const copy_kv_paged_spv = copy_kv_paged_compile.addOutputFileArg("copy_kv_to_paged.spv");
     copy_kv_paged_compile.addFileArg(b.path("shaders/copy_kv_to_paged.comp"));
+
+    // --- BF16 Shaders (emulated, works on all hardware) ---
+    const attention_bf16_compile = b.addSystemCommand(&.{ "glslc", "-O", "--target-env=vulkan1.2", "-o" });
+    const attention_bf16_spv = attention_bf16_compile.addOutputFileArg("attention_bf16.spv");
+    attention_bf16_compile.addFileArg(b.path("shaders/attention_bf16.comp"));
+
+    // --- BF16 Native Shader (using SPV_KHR_bfloat16 extension) ---
+    const attention_bf16_native_compile = b.addSystemCommand(&.{ "glslc", "-O", "--target-env=vulkan1.2", "-o" });
+    const attention_bf16_native_spv = attention_bf16_native_compile.addOutputFileArg("attention_bf16_native.spv");
+    attention_bf16_native_compile.addFileArg(b.path("shaders/attention_bf16_native.comp"));
+
+    // --- FP16 Native Shader (actual float16_t types, requires VK_KHR_shader_float16_int8) ---
+    const attention_fp16_native_compile = b.addSystemCommand(&.{ "glslc", "-O", "--target-env=vulkan1.2", "-o" });
+    const attention_fp16_native_spv = attention_fp16_native_compile.addOutputFileArg("attention_fp16_native.spv");
+    attention_fp16_native_compile.addFileArg(b.path("shaders/attention_fp16_native.comp"));
     // --------------------------
+
+    // Create modules with vulkan dependency
+    const vulkan_context_mod = b.createModule(.{ .root_source_file = b.path("src/vulkan_context.zig") });
+    vulkan_context_mod.addImport("vulkan", vulkan_mod);
+    vulkan_context_mod.addOptions("config", options);
+
+    const buffer_manager_mod = b.createModule(.{ .root_source_file = b.path("src/buffer_manager.zig") });
+    buffer_manager_mod.addImport("vulkan", vulkan_mod);
+    buffer_manager_mod.addImport("vulkan_context", vulkan_context_mod);
+
+    const block_table_mod = b.createModule(.{ .root_source_file = b.path("src/block_table.zig") });
+    block_table_mod.addImport("vulkan", vulkan_mod);
+    block_table_mod.addImport("vulkan_context", vulkan_context_mod);
+    block_table_mod.addImport("buffer_manager", buffer_manager_mod);
+
+    const block_pool_mod = b.createModule(.{ .root_source_file = b.path("src/block_pool.zig") });
+    block_pool_mod.addImport("vulkan", vulkan_mod);
+    block_pool_mod.addImport("vulkan_context", vulkan_context_mod);
+    block_pool_mod.addImport("buffer_manager", buffer_manager_mod);
 
     // Main library (shared)
     const lib = b.addSharedLibrary(.{
@@ -141,13 +175,17 @@ pub fn build(b: *std.Build) void {
     });
     lib.root_module.addImport("vulkan", vulkan_mod);
     lib.root_module.addOptions("config", options);
+    lib.root_module.addImport("vulkan_context", vulkan_context_mod);
+    lib.root_module.addImport("buffer_manager", buffer_manager_mod);
+    lib.root_module.addImport("block_table", block_table_mod);
+    lib.root_module.addImport("block_pool", block_pool_mod);
     lib.root_module.addAnonymousImport("attention_f32_spv", .{ .root_source_file = attention_f32_spv });
     lib.root_module.addAnonymousImport("attention_amd_spv", .{ .root_source_file = attention_amd_spv });
     lib.root_module.addAnonymousImport("attention_bwd_spv", .{ .root_source_file = attention_bwd_spv });
     lib.root_module.addAnonymousImport("attention_fwd_lse_spv", .{ .root_source_file = attention_fwd_lse_spv });
     lib.root_module.addAnonymousImport("spatial_sort_spv", .{ .root_source_file = spatial_sort_spv });
     lib.root_module.addAnonymousImport("attention_gravity_spv", .{ .root_source_file = attention_gravity_spv });
-    
+
     // Radix Imports
     lib.root_module.addAnonymousImport("radix_count_spv", .{ .root_source_file = radix_count_spv });
     lib.root_module.addAnonymousImport("radix_scan_spv", .{ .root_source_file = radix_scan_spv });
@@ -165,6 +203,13 @@ pub fn build(b: *std.Build) void {
     // Paged attention shaders
     lib.root_module.addAnonymousImport("attention_paged_spv", .{ .root_source_file = attention_paged_spv });
     lib.root_module.addAnonymousImport("copy_kv_to_paged_spv", .{ .root_source_file = copy_kv_paged_spv });
+
+    // BF16 shader imports
+    lib.root_module.addAnonymousImport("attention_bf16_spv", .{ .root_source_file = attention_bf16_spv });
+    lib.root_module.addAnonymousImport("attention_bf16_native_spv", .{ .root_source_file = attention_bf16_native_spv });
+
+    // FP16 native shader imports
+    lib.root_module.addAnonymousImport("attention_fp16_native_spv", .{ .root_source_file = attention_fp16_native_spv });
 
     // Link Vulkan on native builds only - cross-compilation uses runtime dynamic loading
     const is_native = target.query.isNative();
@@ -184,13 +229,17 @@ pub fn build(b: *std.Build) void {
     });
     static_lib.root_module.addImport("vulkan", vulkan_mod);
     static_lib.root_module.addOptions("config", options);
+    static_lib.root_module.addImport("vulkan_context", vulkan_context_mod);
+    static_lib.root_module.addImport("buffer_manager", buffer_manager_mod);
+    static_lib.root_module.addImport("block_table", block_table_mod);
+    static_lib.root_module.addImport("block_pool", block_pool_mod);
     static_lib.root_module.addAnonymousImport("attention_f32_spv", .{ .root_source_file = attention_f32_spv });
     static_lib.root_module.addAnonymousImport("attention_amd_spv", .{ .root_source_file = attention_amd_spv });
     static_lib.root_module.addAnonymousImport("attention_bwd_spv", .{ .root_source_file = attention_bwd_spv });
     static_lib.root_module.addAnonymousImport("attention_fwd_lse_spv", .{ .root_source_file = attention_fwd_lse_spv });
     static_lib.root_module.addAnonymousImport("spatial_sort_spv", .{ .root_source_file = spatial_sort_spv });
     static_lib.root_module.addAnonymousImport("attention_gravity_spv", .{ .root_source_file = attention_gravity_spv });
-    
+
     // Radix Imports
     static_lib.root_module.addAnonymousImport("radix_count_spv", .{ .root_source_file = radix_count_spv });
     static_lib.root_module.addAnonymousImport("radix_scan_spv", .{ .root_source_file = radix_scan_spv });
@@ -208,6 +257,13 @@ pub fn build(b: *std.Build) void {
     // Paged attention shaders (static)
     static_lib.root_module.addAnonymousImport("attention_paged_spv", .{ .root_source_file = attention_paged_spv });
     static_lib.root_module.addAnonymousImport("copy_kv_to_paged_spv", .{ .root_source_file = copy_kv_paged_spv });
+
+    // BF16 shader imports (static)
+    static_lib.root_module.addAnonymousImport("attention_bf16_spv", .{ .root_source_file = attention_bf16_spv });
+    static_lib.root_module.addAnonymousImport("attention_bf16_native_spv", .{ .root_source_file = attention_bf16_native_spv });
+
+    // FP16 native shader imports (static)
+    static_lib.root_module.addAnonymousImport("attention_fp16_native_spv", .{ .root_source_file = attention_fp16_native_spv });
 
     static_lib.linkSystemLibrary("vulkan");
     static_lib.linkLibC();
@@ -237,20 +293,6 @@ pub fn build(b: *std.Build) void {
     block_pool_tests.root_module.addImport("vulkan", vulkan_mod);
     block_pool_tests.root_module.addOptions("config", options);
     block_pool_tests.root_module.addImport("aule", static_lib.root_module);
-
-    // Create modules with vulkan dependency
-    const block_pool_mod = b.createModule(.{ .root_source_file = b.path("src/block_pool.zig") });
-    block_pool_mod.addImport("vulkan", vulkan_mod);
-
-    const block_table_mod = b.createModule(.{ .root_source_file = b.path("src/block_table.zig") });
-    block_table_mod.addImport("vulkan", vulkan_mod);
-
-    const vulkan_context_mod = b.createModule(.{ .root_source_file = b.path("src/vulkan_context.zig") });
-    vulkan_context_mod.addImport("vulkan", vulkan_mod);
-    vulkan_context_mod.addOptions("config", options);
-
-    const buffer_manager_mod = b.createModule(.{ .root_source_file = b.path("src/buffer_manager.zig") });
-    buffer_manager_mod.addImport("vulkan", vulkan_mod);
 
     block_pool_tests.root_module.addImport("block_pool", block_pool_mod);
     block_pool_tests.root_module.addImport("block_table", block_table_mod);
@@ -303,7 +345,7 @@ pub fn build(b: *std.Build) void {
     benchmark.root_module.addImport("aule", static_lib.root_module);
     // Note: static_lib already has vulkan/libc linked, but we might need to ensure transient deps work
     // Ideally we link shared 'lib' or static 'static_lib' module.
-    
+
     const run_benchmark = b.addRunArtifact(benchmark);
     const benchmark_step = b.step("benchmark", "Run attention benchmark");
     benchmark_step.dependOn(&run_benchmark.step);

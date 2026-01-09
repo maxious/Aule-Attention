@@ -28,6 +28,14 @@ aule-attention provides a drop-in FlashAttention implementation that works acros
 - **Vulkan**: For Intel, Apple, AMD consumer GPUs, and any Vulkan-capable device (inference)
 - **CPU**: NumPy fallback for systems without GPU support
 
+## Environment Variables
+
+You can configure aule-attention using environment variables:
+
+| Variable | Description | Values |
+|----------|-------------|--------|
+| `AULE_GPU_VENDOR` | Force GPU vendor selection. Useful for systems with multiple GPUs (e.g. iGPU + dGPU). | `nvidia`, `amd`, `intel` |
+
 ## Installation
 
 ```bash

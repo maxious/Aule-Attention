@@ -1,8 +1,8 @@
 const std = @import("std");
 const vk = @import("vulkan");
-const VulkanContext = @import("vulkan_context.zig").VulkanContext;
-const BufferManager = @import("buffer_manager.zig").BufferManager;
-const Buffer = @import("buffer_manager.zig").Buffer;
+const VulkanContext = @import("vulkan_context").VulkanContext;
+const BufferManager = @import("buffer_manager").BufferManager;
+const Buffer = @import("buffer_manager").Buffer;
 
 /// A tensor that lives on the GPU
 /// Data stays on GPU between operations - no copy overhead for repeated use

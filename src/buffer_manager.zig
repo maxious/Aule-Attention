@@ -1,7 +1,7 @@
 const std = @import("std");
 const vk = @import("vulkan");
-const VulkanContext = @import("vulkan_context.zig").VulkanContext;
-const InstanceDispatch = @import("vulkan_context.zig").InstanceDispatchType;
+const VulkanContext = @import("vulkan_context").VulkanContext;
+const InstanceDispatch = @import("vulkan_context").InstanceDispatchType;
 
 const log = std.log.scoped(.buffer_manager);
 

@@ -11,7 +11,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 
 // Import backends
-const vulkan_backend = @import("../vulkan_context.zig");
+const vulkan_backend = @import("vulkan_context");
 const hip_backend = @import("hip.zig");
 const AttentionEngine = @import("../attention_gpu.zig").AttentionEngine;
 const GpuTensor = @import("../gpu_tensor.zig").GpuTensor;
@@ -59,7 +59,7 @@ pub const AttentionContext = struct {
 
     /// Initialize with automatic backend selection
     pub fn init(allocator: std.mem.Allocator, generic_shader: []const u8, amd_shader: []const u8) BackendError!Self {
-        return initWithBackward(allocator, generic_shader, amd_shader, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+        return initWithBackward(allocator, generic_shader, amd_shader, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
     }
 
     /// Initialize with backward pass support
@@ -69,7 +69,7 @@ pub const AttentionContext = struct {
         amd_shader: []const u8,
         forward_lse_shader: ?[]const u8,
         backward_shader: ?[]const u8,
-        sort_shader: ?[]const u8,
+        spatial_sort_shader: ?[]const u8,
         gravity_shader: ?[]const u8,
         radix_count_shader: ?[]const u8,
         radix_scan_shader: ?[]const u8,
@@ -79,6 +79,9 @@ pub const AttentionContext = struct {
         fast_shader: ?[]const u8,
         fp16_shader: ?[]const u8,
         fp16_amd_shader: ?[]const u8,
+        bf16_shader: ?[]const u8,
+        bf16_native_shader: ?[]const u8,
+        fp16_native_shader: ?[]const u8,
         paged_shader: ?[]const u8,
         copy_kv_shader: ?[]const u8,
     ) BackendError!Self {
@@ -93,7 +96,7 @@ pub const AttentionContext = struct {
             if (std.mem.eql(u8, backend_name, "hip")) {
                 return initHip(allocator);
             } else if (std.mem.eql(u8, backend_name, "vulkan")) {
-                return initVulkan(allocator, generic_shader, amd_shader, forward_lse_shader, backward_shader, sort_shader, gravity_shader, radix_count_shader, radix_scan_shader, radix_scatter_shader, iota_shader, magnitude_shader, fast_shader, fp16_shader, fp16_amd_shader, paged_shader, copy_kv_shader);
+                return initVulkan(allocator, generic_shader, amd_shader, forward_lse_shader, backward_shader, spatial_sort_shader, gravity_shader, radix_count_shader, radix_scan_shader, radix_scatter_shader, iota_shader, magnitude_shader, fast_shader, fp16_shader, fp16_amd_shader, bf16_shader, bf16_native_shader, fp16_native_shader, paged_shader, copy_kv_shader);
             } else if (std.mem.eql(u8, backend_name, "cpu")) {
                 return initCpu(allocator);
             }
@@ -108,7 +111,7 @@ pub const AttentionContext = struct {
             return ctx;
         } else |_| {}
 
-        if (initVulkan(allocator, generic_shader, amd_shader, forward_lse_shader, backward_shader, sort_shader, gravity_shader, radix_count_shader, radix_scan_shader, radix_scatter_shader, iota_shader, magnitude_shader, fast_shader, fp16_shader, fp16_amd_shader, paged_shader, copy_kv_shader)) |ctx| {
+        if (initVulkan(allocator, generic_shader, amd_shader, forward_lse_shader, backward_shader, spatial_sort_shader, gravity_shader, radix_count_shader, radix_scan_shader, radix_scatter_shader, iota_shader, magnitude_shader, fast_shader, fp16_shader, fp16_amd_shader, paged_shader, copy_kv_shader, bf16_shader, bf16_native_shader, fp16_native_shader)) |ctx| {
             return ctx;
         } else |_| {}
 
@@ -121,7 +124,7 @@ pub const AttentionContext = struct {
         amd_shader: []const u8,
         forward_lse_shader: ?[]const u8,
         backward_shader: ?[]const u8,
-        sort_shader: ?[]const u8,
+        spatial_sort_shader: ?[]const u8,
         gravity_shader: ?[]const u8,
         radix_count_shader: ?[]const u8,
         radix_scan_shader: ?[]const u8,
@@ -133,9 +136,12 @@ pub const AttentionContext = struct {
         fp16_amd_shader: ?[]const u8,
         paged_shader: ?[]const u8,
         copy_kv_shader: ?[]const u8,
+        bf16_shader: ?[]const u8,
+        bf16_native_shader: ?[]const u8,
+        fp16_native_shader: ?[]const u8,
     ) BackendError!Self {
         const engine = allocator.create(AttentionEngine) catch return BackendError.OutOfMemory;
-        engine.* = AttentionEngine.initWithBackward(allocator, generic_shader, amd_shader, forward_lse_shader, backward_shader, sort_shader, gravity_shader, radix_count_shader, radix_scan_shader, radix_scatter_shader, iota_shader, magnitude_shader, fast_shader, fp16_shader, fp16_amd_shader, paged_shader, copy_kv_shader) catch |err| {
+        engine.* = AttentionEngine.initWithBackward(allocator, generic_shader, amd_shader, forward_lse_shader, backward_shader, spatial_sort_shader, gravity_shader, radix_count_shader, radix_scan_shader, radix_scatter_shader, iota_shader, magnitude_shader, fast_shader, fp16_shader, fp16_amd_shader, bf16_shader, bf16_native_shader, fp16_native_shader, paged_shader, copy_kv_shader) catch |err| {
             allocator.destroy(engine);
             return switch (err) {
                 error.OutOfMemory => BackendError.OutOfMemory,
@@ -206,14 +212,14 @@ pub const AttentionContext = struct {
             .vulkan => {
                 const ctx = self.vulkan_ctx orelse return BackendError.BackendInitFailed;
                 const gpu_tensor = self.allocator.create(GpuTensor) catch return BackendError.OutOfMemory;
-                
+
                 // GpuTensor.init returns !GpuTensor
                 gpu_tensor.* = ctx.createTensor(&shape) catch |err| {
                     self.allocator.destroy(gpu_tensor);
                     return switch (err) {
                         error.InvalidShape => BackendError.InvalidTensor,
                         // Map Vulkan memory errors to OutOfMemory
-                        else => BackendError.OutOfMemory, 
+                        else => BackendError.OutOfMemory,
                     };
                 };
 
@@ -523,12 +529,12 @@ fn cpuAttention(Q: *Tensor, K: *Tensor, V: *Tensor, output: *Tensor) BackendErro
             for (0..seq_len) |i| {
                 // Compute attention scores
                 var max_score: f32 = -std.math.inf(f32);
-                
+
                 // Using a dynamic allocation for scores to avoid stack overflow with large seq_len
                 // But for fallback/simplicity we'll just handle up to a limit or risk stack issues
                 // Ideally this should use an allocator.
                 // Given the constraints, let's just loop twice to compute max then exp sum.
-                
+
                 // First pass: find max_score
                 for (0..seq_len) |j| {
                     var dot: f32 = 0;
@@ -579,7 +585,7 @@ pub fn detectBackends(allocator: std.mem.Allocator) ![]Backend {
     if (hip_backend.isAvailable()) {
         try backends.append(.hip);
     }
-    
+
     // Check Vulkan - assumes available if library loaded
     // Full availability check happens at runtime when creating instance
     try backends.append(.vulkan);

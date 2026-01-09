@@ -1,9 +1,8 @@
 const std = @import("std");
 const vk = @import("vulkan");
-const VulkanContext = @import("vulkan_context.zig").VulkanContext;
-const buffer_manager_pkg = @import("buffer_manager.zig");
-const BufferManager = buffer_manager_pkg.BufferManager;
-const Buffer = buffer_manager_pkg.Buffer;
+const VulkanContext = @import("vulkan_context").VulkanContext;
+const BufferManager = @import("buffer_manager").BufferManager;
+const Buffer = @import("buffer_manager").Buffer;
 const AttentionPipeline = @import("attention_pipeline.zig").AttentionPipeline;
 const PagedAttentionPipeline = @import("paged_attention_pipeline.zig").PagedAttentionPipeline;
 const CopyKVPipeline = @import("copy_kv_pipeline.zig").CopyKVPipeline;
@@ -13,17 +12,20 @@ const BackwardPipeline = BackwardPipelines.BackwardPipeline;
 const SortPipeline = @import("sort_pipeline.zig").SortPipeline;
 const GravityPipeline = @import("gravity_pipeline.zig").GravityPipeline;
 const GpuTensor = @import("gpu_tensor.zig").GpuTensor;
-const BlockPool = @import("block_pool.zig").BlockPool;
-const BlockTable = @import("block_table.zig").BlockTable;
+const BlockPool = @import("block_pool").BlockPool;
+const BlockTable = @import("block_table").BlockTable;
 
 const log = std.log.scoped(.attention_gpu);
 
 /// Shader variant selection for different performance profiles
 pub const ShaderVariant = enum(u8) {
-    baseline = 0, // Original 16x16 block, scalar loads
+    baseline = 0, // Original 16x16 block, scalar loads (emulated, slow)
     fast = 1, // Optimized 32x32 block, vec4 loads, block skipping
     fp16 = 2, // FP16 with FP32 accumulation (requires hardware support)
     fp16_amd = 3, // FP16 optimized for AMD 64-wide wavefronts
+    bf16 = 4, // BF16 emulated (works on all hardware, slow)
+    bf16_native = 5, // BF16 native using SPV_KHR_bfloat16 extension
+    fp16_native = 6, // FP16 native (actual float16_t types)
 };
 
 /// High-performance attention engine that operates on persistent GPU tensors
@@ -35,6 +37,9 @@ pub const AttentionEngine = struct {
     fast_pipeline: ?AttentionPipeline, // Optimized FP32 shader
     fp16_pipeline: ?AttentionPipeline, // FP16 shader
     fp16_amd_pipeline: ?AttentionPipeline, // FP16 AMD-optimized
+    fp16_native_pipeline: ?AttentionPipeline, // FP16 native (float16_t types)
+    bf16_pipeline: ?AttentionPipeline, // BF16 emulated shader
+    bf16_native_pipeline: ?AttentionPipeline, // BF16 native using SPV_KHR_bfloat16
     paged_pipeline: ?PagedAttentionPipeline, // PagedAttention with block pool
     copy_kv_pipeline: ?CopyKVPipeline, // K/V scatter to paged format
     active_variant: ShaderVariant,
@@ -57,7 +62,7 @@ pub const AttentionEngine = struct {
     pub fn init(allocator: std.mem.Allocator, generic_shader: []const u8, amd_shader: []const u8) !Self {
         // Warning: This legacy init will fail if new shaders are required by pipeline
         // We should pass null for optional shaders
-        return initWithBackward(allocator, generic_shader, amd_shader, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+        return initWithBackward(allocator, generic_shader, amd_shader, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
     }
 
     pub fn initWithBackward(
@@ -76,6 +81,9 @@ pub const AttentionEngine = struct {
         fast_shader: ?[]const u8,
         fp16_shader: ?[]const u8,
         fp16_amd_shader: ?[]const u8,
+        bf16_shader: ?[]const u8,
+        bf16_native_shader: ?[]const u8,
+        fp16_native_shader: ?[]const u8,
         paged_shader: ?[]const u8,
         copy_kv_shader: ?[]const u8,
     ) !Self {
@@ -117,6 +125,27 @@ pub const AttentionEngine = struct {
             }
         }
 
+        // BF16 emulated shader (works on all hardware)
+        var bf16_pipeline: ?AttentionPipeline = null;
+        if (bf16_shader) |s| {
+            bf16_pipeline = try AttentionPipeline.init(ctx, s);
+            log.info("BF16 emulated shader loaded (universal)", .{});
+        }
+
+        // BF16 native shader using SPV_KHR_bfloat16 extension
+        var bf16_native_pipeline: ?AttentionPipeline = null;
+        if (bf16_native_shader) |s| {
+            bf16_native_pipeline = try AttentionPipeline.init(ctx, s);
+            log.info("BF16 native shader loaded (SPV_KHR_bfloat16)", .{});
+        }
+
+        // FP16 native shader (actual float16_t types)
+        var fp16_native_pipeline: ?AttentionPipeline = null;
+        if (fp16_native_shader) |s| {
+            fp16_native_pipeline = try AttentionPipeline.init(ctx, s);
+            log.info("FP16 native shader loaded (float16_t types)", .{});
+        }
+
         var paged_pipeline: ?PagedAttentionPipeline = null;
         if (paged_shader) |s| {
             log.info("Initializing PagedAttention pipeline...", .{});
@@ -147,18 +176,12 @@ pub const AttentionEngine = struct {
         var sort_pipeline: ?SortPipeline = null;
         // Only init sort pipeline if ALL radix shaders are present
         if (spatial_sort_shader != null and radix_count_shader != null and radix_scan_shader != null and radix_scatter_shader != null and iota_shader != null) {
-            sort_pipeline = try SortPipeline.initWithMagnitude(ctx,
-                spatial_sort_shader.?,
-                radix_count_shader.?,
-                radix_scan_shader.?,
-                radix_scatter_shader.?,
-                iota_shader.?,
-                magnitude_shader // Optional magnitude shader for improved sorting
+            sort_pipeline = try SortPipeline.initWithMagnitude(ctx, spatial_sort_shader.?, radix_count_shader.?, radix_scan_shader.?, radix_scatter_shader.?, iota_shader.?, magnitude_shader // Optional magnitude shader for improved sorting
             );
             log.info("Sort pipeline initialized (Radix enabled, magnitude={s})", .{if (magnitude_shader != null) "yes" else "no"});
         } else if (spatial_sort_shader) |s| {
-             _ = s; // Unused
-             log.warn("Missing Radix Sort shaders, SortPipeline skipped", .{});
+            _ = s; // Unused
+            log.warn("Missing Radix Sort shaders, SortPipeline skipped", .{});
         }
 
         var gravity_pipeline: ?GravityPipeline = null;
@@ -171,6 +194,9 @@ pub const AttentionEngine = struct {
             .fast_pipeline = fast_pipeline,
             .fp16_pipeline = fp16_pipeline,
             .fp16_amd_pipeline = fp16_amd_pipeline,
+            .fp16_native_pipeline = fp16_native_pipeline,
+            .bf16_pipeline = bf16_pipeline,
+            .bf16_native_pipeline = bf16_native_pipeline,
             .paged_pipeline = paged_pipeline,
             .copy_kv_pipeline = copy_kv_pipeline,
             .active_variant = active_variant,
@@ -205,6 +231,21 @@ pub const AttentionEngine = struct {
                 self.active_variant = .fp16_amd;
                 log.info("Switched to FP16 AMD-optimized shader", .{});
             },
+            .bf16 => {
+                if (self.bf16_pipeline == null) return error.ShaderVariantNotAvailable;
+                self.active_variant = .bf16;
+                log.info("Switched to BF16 emulated shader", .{});
+            },
+            .bf16_native => {
+                if (self.bf16_native_pipeline == null) return error.ShaderVariantNotAvailable;
+                self.active_variant = .bf16_native;
+                log.info("Switched to BF16 native shader (SPV_KHR_bfloat16)", .{});
+            },
+            .fp16_native => {
+                if (self.fp16_native_pipeline == null) return error.ShaderVariantNotAvailable;
+                self.active_variant = .fp16_native;
+                log.info("Switched to FP16 native shader", .{});
+            },
         }
     }
 
@@ -220,11 +261,14 @@ pub const AttentionEngine = struct {
             .fast => if (self.fast_pipeline) |*p| p else &self.pipeline,
             .fp16 => if (self.fp16_pipeline) |*p| p else &self.pipeline,
             .fp16_amd => if (self.fp16_amd_pipeline) |*p| p else &self.pipeline,
+            .bf16 => if (self.bf16_pipeline) |*p| p else &self.pipeline,
+            .bf16_native => if (self.bf16_native_pipeline) |*p| p else &self.pipeline,
+            .fp16_native => if (self.fp16_native_pipeline) |*p| p else &self.pipeline,
         };
     }
 
     // ... (deinit, createTensor, forward, etc. - keep unchanged)
-    
+
     /// Radix Sort Implementation
     /// Uses 4 passes of 8-bit Radix Sort
     pub fn spatialSort(
@@ -243,7 +287,7 @@ pub const AttentionEngine = struct {
         const seq_len = keys.shape[2];
         const d_model = keys.shape[3];
         const num_elements = batch * heads * seq_len; // Total items to sort?
-        
+
         // PROBLEM: We need to sort each (Batch, Head) independently (Segmented Sort).
         // Our Radix Sort is currently Global.
         // If B=1, H=1, Global Sort is fine.
@@ -263,16 +307,16 @@ pub const AttentionEngine = struct {
         // Histograms: [NumGroups * 256] (u32)
         const hist_size = num_workgroups * 256 * 4;
         if (self.radix_hist_buffer == null or self.radix_hist_buffer.?.size < hist_size) {
-             if (self.radix_hist_buffer) |*b| self.buffer_manager.destroyBuffer(b);
-             self.radix_hist_buffer = try self.buffer_manager.createBuffer(hist_size, .{ .storage_buffer_bit = true }, .{ .device_local_bit = true });
+            if (self.radix_hist_buffer) |*b| self.buffer_manager.destroyBuffer(b);
+            self.radix_hist_buffer = try self.buffer_manager.createBuffer(hist_size, .{ .storage_buffer_bit = true }, .{ .device_local_bit = true });
         }
         const hist_buf = self.radix_hist_buffer.?;
 
         // Indices Ping-Pong: We need a secondary indices buffer
         const inds_size = num_elements * 4;
         if (self.radix_inds_temp == null or self.radix_inds_temp.?.size < inds_size) {
-             if (self.radix_inds_temp) |*b| self.buffer_manager.destroyBuffer(b);
-             self.radix_inds_temp = try self.buffer_manager.createBuffer(inds_size, .{ .storage_buffer_bit = true }, .{ .device_local_bit = true });
+            if (self.radix_inds_temp) |*b| self.buffer_manager.destroyBuffer(b);
+            self.radix_inds_temp = try self.buffer_manager.createBuffer(inds_size, .{ .storage_buffer_bit = true }, .{ .device_local_bit = true });
         }
         const inds_temp = self.radix_inds_temp.?;
 
@@ -290,19 +334,11 @@ pub const AttentionEngine = struct {
 
         // 3. Compute sort keys (magnitude-based if available)
         if (sort_pipe.hasMagnitudeSort()) {
-            try sort_pipe.dispatchMagnitude(
-                keys.getBuffer(),
-                indices.getBuffer(),
-                sort_keys_final.buffer,
-                num_elements,
-                d_model,
-                @intCast(num_segments),
-                @intCast(S)
-            );
+            try sort_pipe.dispatchMagnitude(keys.getBuffer(), indices.getBuffer(), sort_keys_final.buffer, num_elements, d_model, @intCast(num_segments), @intCast(S));
         }
 
         // 4. Perform Radix Sort (4 passes)
-        std.debug.print("DEBUG: dispatchRadix PRE-CALL. d_model={}, num_elements={}, S={}\n", .{d_model, num_elements, S});
+        std.debug.print("DEBUG: dispatchRadix PRE-CALL. d_model={}, num_elements={}, S={}\n", .{ d_model, num_elements, S });
         if (d_model == 0) return error.InvalidDModel;
 
         try sort_pipe.dispatchRadix(
@@ -335,6 +371,9 @@ pub const AttentionEngine = struct {
         if (self.fast_pipeline) |*p| p.deinit();
         if (self.fp16_pipeline) |*p| p.deinit();
         if (self.fp16_amd_pipeline) |*p| p.deinit();
+        if (self.fp16_native_pipeline) |*p| p.deinit();
+        if (self.bf16_pipeline) |*p| p.deinit();
+        if (self.bf16_native_pipeline) |*p| p.deinit();
         if (self.paged_pipeline) |*p| p.deinit();
         if (self.copy_kv_pipeline) |*p| p.deinit();
         self.pipeline.deinit();
@@ -380,14 +419,14 @@ pub const AttentionEngine = struct {
 
         // Verify all shapes match (GQA: K/V heads can be divisor of Q heads)
         // K.shape[1] (num_kv_heads) must divide num_heads
-        if (K.shape[0] != batch_size or 
+        if (K.shape[0] != batch_size or
             (num_heads % K.shape[1] != 0) or
             K.shape[3] != head_dim)
         {
             return error.ShapeMismatch;
         }
         if (V.shape[0] != batch_size or V.shape[1] != K.shape[1] or
-            V.shape[2] != K.shape[2] or 
+            V.shape[2] != K.shape[2] or
             V.shape[3] != head_dim)
         {
             return error.ShapeMismatch;
@@ -399,16 +438,19 @@ pub const AttentionEngine = struct {
             return error.ShapeMismatch;
         }
 
-        if (head_dim > 64) {
+        if (head_dim > 128) {
             return error.HeadDimTooLarge;
         }
-        
+        // BF16 variants (bf16, bf16_intel, bf16_native) support up to 128
+        // FP16 variants (fp16, fp16_native, fp16_intel) also support up to 128
+        // Other variants (baseline, fast) limited to 64
+
         // RoPE validation
         var rope_size: u64 = 0;
         var has_rope = false;
         var cos_buf: ?vk.Buffer = null;
         var sin_buf: ?vk.Buffer = null;
-        
+
         if (rot_cos) |c| {
             if (rot_sin) |s| {
                 has_rope = true;
@@ -444,9 +486,7 @@ pub const AttentionEngine = struct {
         const num_kv_heads = K.shape[1];
         const key_seq_len = K.shape[2];
 
-        log.info("Dispatching ({s}): B={d}, H={d}, KVH={d}, QLen={d}, KLen={d}", .{
-            @tagName(self.active_variant), batch_size, num_heads, num_kv_heads, seq_len, key_seq_len
-        });
+        log.info("Dispatching ({s}): B={d}, H={d}, KVH={d}, QLen={d}, KLen={d}", .{ @tagName(self.active_variant), batch_size, num_heads, num_kv_heads, seq_len, key_seq_len });
 
         // Dispatch - data stays on GPU!
         try active_pipe.dispatch(batch_size, num_heads, num_kv_heads, seq_len, key_seq_len, head_dim, causal, has_rope, window_size);
@@ -511,20 +551,22 @@ pub const AttentionEngine = struct {
             return error.ShapeMismatch;
         }
         if (V.shape[0] != batch_size or V.shape[1] != num_kv_heads or
-            V.shape[2] != key_seq_len or V.shape[3] != head_dim) {
+            V.shape[2] != key_seq_len or V.shape[3] != head_dim)
+        {
             return error.ShapeMismatch;
         }
         if (output.shape[0] != batch_size or output.shape[1] != num_heads or
-            output.shape[2] != seq_len or output.shape[3] != head_dim) {
+            output.shape[2] != seq_len or output.shape[3] != head_dim)
+        {
             return error.ShapeMismatch;
         }
-        if (head_dim > 64) {
+        if (head_dim > 128) {
             return error.HeadDimTooLarge;
         }
 
         // Lazy initialization of block pool and table
         if (self.block_pool == null) {
-            const BlockPoolConfig = @import("block_pool.zig").BlockPoolConfig;
+            const BlockPoolConfig = @import("block_pool").BlockPoolConfig;
             const config = BlockPoolConfig{
                 .initial_blocks = 512,
                 .blocks_per_chunk = 512,
@@ -547,7 +589,7 @@ pub const AttentionEngine = struct {
                 batch_size,
                 max_blocks_per_request,
             );
-            log.info("Initialized BlockTable: batch={}, max_blocks={}", .{batch_size, max_blocks_per_request});
+            log.info("Initialized BlockTable: batch={}, max_blocks={}", .{ batch_size, max_blocks_per_request });
         }
 
         var block_pool = &self.block_pool.?;
@@ -557,7 +599,7 @@ pub const AttentionEngine = struct {
         const tokens_per_block = 32;
         const blocks_needed = (key_seq_len + tokens_per_block - 1) / tokens_per_block;
 
-        log.debug("PagedAttention: seq_len={}, blocks_needed={}", .{key_seq_len, blocks_needed});
+        log.debug("PagedAttention: seq_len={}, blocks_needed={}", .{ key_seq_len, blocks_needed });
 
         // Allocate blocks for each sequence in batch
         var allocated_blocks = try self.allocator.alloc([]u32, batch_size);
@@ -677,7 +719,7 @@ pub const AttentionEngine = struct {
         copy_pipe.updateDescriptors(
             K.buffer.buffer,
             V.buffer.buffer,
-            block_table.staging_buffer.buffer,  // Use staging buffer, not table_buffer
+            block_table.staging_buffer.buffer, // Use staging buffer, not table_buffer
             block_pool.kv_pool_buffer.buffer,
             k_size,
             v_size,
@@ -700,7 +742,6 @@ pub const AttentionEngine = struct {
             (seq_len + 31) / 32,
         });
     }
-
 
     /// Forward pass with LSE output (for training)
     /// Returns output and log-sum-exp values needed for backward pass
@@ -747,7 +788,7 @@ pub const AttentionEngine = struct {
             return error.ShapeMismatch;
         }
 
-        if (head_dim > 64) {
+        if (head_dim > 128) {
             return error.HeadDimTooLarge;
         }
 
@@ -790,7 +831,7 @@ pub const AttentionEngine = struct {
         const seq_len = Q.shape[2];
         const head_dim = Q.shape[3];
 
-        if (head_dim > 64) {
+        if (head_dim > 128) {
             return error.HeadDimTooLarge;
         }
 
@@ -829,8 +870,6 @@ pub const AttentionEngine = struct {
         try self.ctx.waitIdle();
     }
 
-
-
     /// Gravity Attention: Indirect attention using sorted indices
     /// window_size: sliding window size (-1 for full attention)
     pub fn forwardGravity(
@@ -855,10 +894,10 @@ pub const AttentionEngine = struct {
         const num_heads = Q.shape[1];
         const seq_len = Q.shape[2];
         const head_dim = Q.shape[3];
-        
+
         // GQA support
         if (K.shape[0] != batch_size or (num_heads % K.shape[1] != 0) or K.shape[3] != head_dim) return error.ShapeMismatch;
-        
+
         // RoPE
         var rope_size: u64 = 0;
         var has_rope = false;
@@ -866,10 +905,10 @@ pub const AttentionEngine = struct {
         var sin_buf: ?vk.Buffer = null;
         if (rot_cos) |c| {
             if (rot_sin) |s| {
-                 has_rope = true;
-                 rope_size = c.byteSize();
-                 cos_buf = c.getBuffer();
-                 sin_buf = s.getBuffer();
+                has_rope = true;
+                rope_size = c.byteSize();
+                cos_buf = c.getBuffer();
+                sin_buf = s.getBuffer();
             } else return error.MissingRotarySin;
         } else if (rot_sin != null) return error.MissingRotaryCos;
 
@@ -916,53 +955,24 @@ pub const AttentionEngine = struct {
 
             // 3. Compute magnitude-based sort keys (if available)
             if (sort_pipe.hasMagnitudeSort()) {
-                try sort_pipe.dispatchMagnitude(
-                    K.getBuffer(),
-                    indices.getBuffer(),
-                    sort_keys_final.buffer,
-                    num_elements,
-                    head_dim, // d_model
-                    @intCast(num_segments),
-                    @intCast(S)
-                );
+                try sort_pipe.dispatchMagnitude(K.getBuffer(), indices.getBuffer(), sort_keys_final.buffer, num_elements, head_dim, // d_model
+                    @intCast(num_segments), @intCast(S));
             }
 
             // 4. Dispatch Radix Sort using pre-computed sort keys
-            try sort_pipe.dispatchRadix(
-               K.getBuffer(),
-               V.getBuffer(),
-               indices.getBuffer(),      // Final indices
-               inds_temp.buffer,         // Temp indices
-               sort_keys_final.buffer,   // Final sort keys
-               sort_keys_temp.buffer,    // Temp sort keys
-               hist_buf.buffer,          // Histograms
-               num_elements,
-               head_dim, // d_model
-               0,        // Sort Dim (unused with magnitude sort)
-               @intCast(num_segments),
-               @intCast(S)
-            );
+            try sort_pipe.dispatchRadix(K.getBuffer(), V.getBuffer(), indices.getBuffer(), // Final indices
+                inds_temp.buffer, // Temp indices
+                sort_keys_final.buffer, // Final sort keys
+                sort_keys_temp.buffer, // Temp sort keys
+                hist_buf.buffer, // Histograms
+                num_elements, head_dim, // d_model
+                0, // Sort Dim (unused with magnitude sort)
+                @intCast(num_segments), @intCast(S));
         }
         // --- END SORTING PHASE ---
 
-        gravity_pipe.updateDescriptors(
-             Q.getBuffer(),
-             K.getBuffer(),
-             V.getBuffer(),
-             output.getBuffer(),
-             cos_buf,
-             sin_buf,
-             indices.getBuffer(),
-             Q.byteSize(),
-             K.byteSize(),
-             V.byteSize(),
-             output.byteSize(),
-             rope_size,
-             indices.byteSize()
-        );
-        
-        try gravity_pipe.dispatch(
-             batch_size, num_heads, num_kv_heads, seq_len, key_seq_len, head_dim, causal, has_rope, max_attend, window_size
-        );
+        gravity_pipe.updateDescriptors(Q.getBuffer(), K.getBuffer(), V.getBuffer(), output.getBuffer(), cos_buf, sin_buf, indices.getBuffer(), Q.byteSize(), K.byteSize(), V.byteSize(), output.byteSize(), rope_size, indices.byteSize());
+
+        try gravity_pipe.dispatch(batch_size, num_heads, num_kv_heads, seq_len, key_seq_len, head_dim, causal, has_rope, max_attend, window_size);
     }
 };

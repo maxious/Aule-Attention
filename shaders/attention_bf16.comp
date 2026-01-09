@@ -1,0 +1,277 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+
+// FlashAttention-2 Forward Pass - BF16 Emulated Version
+// Uses uint16 buffers with software conversion to float for arithmetic
+// Works on ANY Vulkan 1.2+ GPU without requiring VK_KHR_shader_bfloat16
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// Storage buffers - BF16 data stored as uint16
+layout(std430, set = 0, binding = 0) readonly buffer QBuffer {
+    uint16_t data[];
+} Q;
+
+layout(std430, set = 0, binding = 1) readonly buffer KBuffer {
+    uint16_t data[];
+} K;
+
+layout(std430, set = 0, binding = 2) readonly buffer VBuffer {
+    uint16_t data[];
+} V;
+
+layout(std430, set = 0, binding = 3) writeonly buffer OutputBuffer {
+    uint16_t data[];
+} O;
+
+layout(std430, set = 0, binding = 4) readonly buffer RotaryCosBuffer {
+    uint16_t data[];
+} RotCos;
+
+layout(std430, set = 0, binding = 5) readonly buffer RotarySinBuffer {
+    uint16_t data[];
+} RotSin;
+
+// Push constants for dimensions
+layout(push_constant) uniform PushConstants {
+    uint batch_size;    // B
+    uint num_heads;     // H
+    uint seq_len;       // N
+    uint head_dim;      // D (<= 128 for BF16 variants, <= 64 for others)
+    float scale;        // 1/sqrt(D)
+    uint causal;        // 1 for causal masking
+    uint has_rope;      // 1 to apply RoPE
+    uint num_kv_heads;  // Number of K/V heads
+    uint key_seq_len;   // Sequence length for K/V
+    int window_size;    // Sliding window size (-1 for full attention)
+} params;
+
+// Shared memory for tiles - we unpack to float for computation
+const uint BLOCK_SIZE = 16;
+const uint MAX_HEAD_DIM = 128;      // Maximum supported head dimension
+
+shared float s_Q[BLOCK_SIZE][MAX_HEAD_DIM];       // Q tile: Br x D
+shared float s_K[BLOCK_SIZE][MAX_HEAD_DIM];       // K tile: Bc x D
+shared float s_V[BLOCK_SIZE][MAX_HEAD_DIM];       // V tile: Bc x D
+shared float s_S[BLOCK_SIZE][BLOCK_SIZE]; // Attention scores: Br x Bc
+
+// BF16 <-> Float conversion functions
+// BF16 is stored as the upper 16 bits of a float32
+float bf16_to_float(uint16_t bf16_val) {
+    uint val32 = uint(bf16_val) << 16;
+    return uintBitsToFloat(val32);
+}
+
+uint16_t float_to_bf16(float val) {
+    uint val32 = floatBitsToUint(val);
+    // Simple truncation (no rounding for performance)
+    return uint16_t(val32 >> 16);
+}
+
+void main() {
+    uint local_row = gl_LocalInvocationID.y;  // Row within block
+    uint local_col = gl_LocalInvocationID.x;  // Col within block
+
+    // Global position
+    uint batch_head_idx = gl_WorkGroupID.z;
+    uint batch_idx = batch_head_idx / params.num_heads;
+    uint head_idx = batch_head_idx % params.num_heads;
+    
+    // GQA Logic
+    uint ratio = params.num_heads / params.num_kv_heads;
+    uint kv_head_idx = head_idx / ratio;
+    uint kv_batch_head_idx = batch_idx * params.num_kv_heads + kv_head_idx;
+    
+    // Base offsets
+    uint qs_off = batch_head_idx * params.seq_len * params.head_dim;
+    uint ks_off = kv_batch_head_idx * params.key_seq_len * params.head_dim;
+    uint vs_off = kv_batch_head_idx * params.key_seq_len * params.head_dim;
+    uint block_row = gl_WorkGroupID.y;
+
+    uint global_row = block_row * BLOCK_SIZE + local_row;
+
+    // Check availability
+    bool is_active = (batch_idx < params.batch_size) && (global_row < params.seq_len);
+
+    uint base_offset = qs_off; // Use calculated qs_off as base for Q
+
+    // Initialize output accumulator
+    float row_max = -1e30;
+    float row_sum = 0.0;
+    float output_acc[64];
+    uint actual_head_dim = min(params.head_dim, 128u);
+
+    for (uint d = 0; d < actual_head_dim; d++) {
+        output_acc[d] = 0.0;
+    }
+
+    // Load Q tile (unpack BF16 -> float)
+    for (uint d = local_col; d < actual_head_dim; d += BLOCK_SIZE) {
+        float q_val = 0.0;
+        if (is_active) {
+            uint16_t bf16_q = Q.data[base_offset + global_row * params.head_dim + d];
+            q_val = bf16_to_float(bf16_q);
+            
+            // RoPE
+            if (params.has_rope != 0u) {
+                uint rot_idx = global_row * (params.head_dim / 2) + (d / 2);
+                if (d < params.head_dim && (d % 2) == 0 && (d + 1) < params.head_dim) {
+                    float cos_val = bf16_to_float(RotCos.data[rot_idx]);
+                    float sin_val = bf16_to_float(RotSin.data[rot_idx]);
+                    
+                    uint16_t bf16_q_next = Q.data[base_offset + global_row * params.head_dim + d + 1];
+                    float q_next = bf16_to_float(bf16_q_next);
+                    
+                    q_val = q_val * cos_val - q_next * sin_val;
+                }
+            }
+        }
+        s_Q[local_row][d] = q_val;
+    }
+
+    barrier();
+
+    // Process K/V blocks
+    uint num_kv_blocks = (params.key_seq_len + BLOCK_SIZE - 1) / BLOCK_SIZE;
+
+    for (uint kv_block = 0; kv_block < num_kv_blocks; kv_block++) {
+        uint kv_start = kv_block * BLOCK_SIZE;
+
+        // Load K tile (unpack BF16 -> float)
+        for (uint d = local_col; d < actual_head_dim; d += BLOCK_SIZE) {
+            float k_val = 0.0;
+            uint k_row = kv_start + local_row;
+            
+            if (k_row < params.key_seq_len && (batch_idx < params.batch_size)) {
+                uint16_t bf16_k = K.data[ks_off + k_row * params.head_dim + d];
+                k_val = bf16_to_float(bf16_k);
+                
+                // RoPE for K
+                if (params.has_rope != 0u) {
+                    uint rot_idx = k_row * (params.head_dim / 2) + (d / 2);
+                    if (d < params.head_dim && (d % 2) == 0 && (d + 1) < params.head_dim) {
+                        float cos_val = bf16_to_float(RotCos.data[rot_idx]);
+                        float sin_val = bf16_to_float(RotSin.data[rot_idx]);
+                        
+                        uint16_t bf16_k_next = K.data[ks_off + k_row * params.head_dim + d + 1];
+                        float k_next = bf16_to_float(bf16_k_next);
+                        
+                        k_val = k_val * cos_val - k_next * sin_val;
+                    }
+                }
+            }
+            s_K[local_row][d] = k_val;
+        }
+
+        // Load V tile (unpack BF16 -> float)
+        for (uint d = local_col; d < actual_head_dim; d += BLOCK_SIZE) {
+            float v_val = 0.0;
+            uint v_row = kv_start + local_row;
+            
+            if (v_row < params.key_seq_len && (batch_idx < params.batch_size)) {
+                uint16_t bf16_v = V.data[vs_off + v_row * params.head_dim + d];
+                v_val = bf16_to_float(bf16_v);
+            }
+            s_V[local_row][d] = v_val;
+        }
+
+        barrier();
+
+        // Compute attention scores: S = Q @ K^T
+        float score = 0.0;
+        for (uint d = 0; d < actual_head_dim; d++) {
+            score += s_Q[local_row][d] * s_K[local_col][d];
+        }
+        s_S[local_row][local_col] = score * params.scale;
+
+        barrier();
+
+        // Apply causal masking and sliding window
+        if (local_col == 0) {
+            for (uint c = 0; c < BLOCK_SIZE; c++) {
+                uint global_col = kv_start + c;
+                float val = s_S[local_row][c];
+                
+                bool masked = false;
+                
+                // Out of bounds masking
+                if (global_col >= params.key_seq_len) {
+                    masked = true;
+                }
+                
+                // Causal masking
+                if (params.causal != 0u && global_col > global_row) {
+                    masked = true;
+                }
+                
+                // Sliding window masking
+                if (params.window_size > 0) {
+                    int dist = int(global_row) - int(global_col);
+                    if (dist > params.window_size) {
+                        masked = true;
+                    }
+                }
+                
+                if (masked) {
+                    val = -1e30;
+                }
+                
+                s_S[local_row][c] = val;
+            }
+        }
+
+        barrier();
+
+        // Online softmax update
+        if (local_col == 0 && is_active) {
+            // Find block max
+            float block_max = -1e30;
+            for (uint c = 0; c < BLOCK_SIZE; c++) {
+                block_max = max(block_max, s_S[local_row][c]);
+            }
+
+            // Update running max and rescale previous accumulator
+            float new_max = max(row_max, block_max);
+            float scale_factor = exp(row_max - new_max);
+            row_sum *= scale_factor;
+            for (uint d = 0; d < actual_head_dim; d++) {
+                output_acc[d] *= scale_factor;
+            }
+
+            // Compute softmax weights for this block and accumulate
+            float block_sum = 0.0;
+            for (uint c = 0; c < BLOCK_SIZE; c++) {
+                float p = exp(s_S[local_row][c] - new_max);
+                s_S[local_row][c] = p;
+                block_sum += p;
+            }
+
+            row_sum += block_sum;
+            row_max = new_max;
+        }
+
+        barrier();
+
+        // Accumulate weighted values: O += softmax(S) @ V
+        if (local_col == 0 && is_active) {
+            for (uint d = 0; d < actual_head_dim; d++) {
+                float weighted_sum = 0.0;
+                for (uint c = 0; c < BLOCK_SIZE; c++) {
+                    weighted_sum += s_S[local_row][c] * s_V[c][d];
+                }
+                output_acc[d] += weighted_sum;
+            }
+        }
+
+        barrier();
+    }
+
+    // Write output (pack float -> BF16)
+    if (local_col == 0 && is_active) {
+        float inv_sum = 1.0 / row_sum;
+        for (uint d = 0; d < actual_head_dim; d++) {
+            float final_val = output_acc[d] * inv_sum;
+            O.data[base_offset + global_row * params.head_dim + d] = float_to_bf16(final_val);
+        }
+    }
+}

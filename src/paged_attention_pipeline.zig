@@ -1,6 +1,6 @@
 const std = @import("std");
 const vk = @import("vulkan");
-const VulkanContext = @import("vulkan_context.zig").VulkanContext;
+const VulkanContext = @import("vulkan_context").VulkanContext;
 
 const log = std.log.scoped(.paged_attention_pipeline);
 
@@ -17,7 +17,7 @@ pub const PagedAttentionPushConstants = extern struct {
     key_seq_len: u32,
     window_size: i32,
     max_blocks_per_request: u32, // Max blocks per sequence in BlockTable
-    num_physical_blocks: u32,     // Total physical blocks in KVPool
+    num_physical_blocks: u32, // Total physical blocks in KVPool
 };
 
 /// Pipeline for PagedAttention with block-based KV cache
@@ -257,14 +257,14 @@ pub const PagedAttentionPipeline = struct {
         const dummy_size: vk.DeviceSize = 64;
 
         const buffer_infos = [_]vk.DescriptorBufferInfo{
-            .{ .buffer = q_buffer, .offset = 0, .range = q_size },                   // Binding 0: Q
-            .{ .buffer = q_buffer, .offset = 0, .range = dummy_size },               // Binding 1: K (unused, use dummy)
-            .{ .buffer = q_buffer, .offset = 0, .range = dummy_size },               // Binding 2: V (unused, use dummy)
-            .{ .buffer = output_buffer, .offset = 0, .range = output_size },         // Binding 3: Output
-            .{ .buffer = cos_buf, .offset = 0, .range = valid_rope_size },           // Binding 4: RoPE Cos
-            .{ .buffer = sin_buf, .offset = 0, .range = valid_rope_size },           // Binding 5: RoPE Sin
+            .{ .buffer = q_buffer, .offset = 0, .range = q_size }, // Binding 0: Q
+            .{ .buffer = q_buffer, .offset = 0, .range = dummy_size }, // Binding 1: K (unused, use dummy)
+            .{ .buffer = q_buffer, .offset = 0, .range = dummy_size }, // Binding 2: V (unused, use dummy)
+            .{ .buffer = output_buffer, .offset = 0, .range = output_size }, // Binding 3: Output
+            .{ .buffer = cos_buf, .offset = 0, .range = valid_rope_size }, // Binding 4: RoPE Cos
+            .{ .buffer = sin_buf, .offset = 0, .range = valid_rope_size }, // Binding 5: RoPE Sin
             .{ .buffer = block_table_buffer, .offset = 0, .range = block_table_size }, // Binding 6: BlockTable
-            .{ .buffer = kv_pool_buffer, .offset = 0, .range = kv_pool_size },       // Binding 7: KVPool
+            .{ .buffer = kv_pool_buffer, .offset = 0, .range = kv_pool_size }, // Binding 7: KVPool
         };
 
         const writes = [_]vk.WriteDescriptorSet{

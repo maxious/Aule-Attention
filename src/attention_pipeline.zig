@@ -1,8 +1,8 @@
 const std = @import("std");
 const vk = @import("vulkan");
-const VulkanContext = @import("vulkan_context.zig").VulkanContext;
-const BufferManager = @import("buffer_manager.zig").BufferManager;
-const Buffer = @import("buffer_manager.zig").Buffer;
+const VulkanContext = @import("vulkan_context").VulkanContext;
+const BufferManager = @import("buffer_manager").BufferManager;
+const Buffer = @import("buffer_manager").Buffer;
 
 const log = std.log.scoped(.attention_pipeline);
 
@@ -233,7 +233,7 @@ pub const AttentionPipeline = struct {
         // If null, we reuse q_buffer (safe because we won't read it if has_rope=0).
         const cos_buf = if (rot_cos_buffer) |b| b else q_buffer;
         const sin_buf = if (rot_sin_buffer) |b| b else q_buffer;
-        
+
         const buffer_infos = [_]vk.DescriptorBufferInfo{
             .{ .buffer = q_buffer, .offset = 0, .range = q_size },
             .{ .buffer = k_buffer, .offset = 0, .range = k_size },

@@ -1,6 +1,6 @@
 const std = @import("std");
 const vk = @import("vulkan");
-const VulkanContext = @import("vulkan_context.zig").VulkanContext;
+const VulkanContext = @import("vulkan_context").VulkanContext;
 
 const log = std.log.scoped(.attention_backward_pipeline);
 

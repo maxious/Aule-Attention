@@ -1,0 +1,185 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#extension GL_EXT_shader_explicit_arithmetic_types : enable
+
+// FlashAttention-2 Forward Pass - Native FP16 Version
+// Uses actual float16_t data types for both storage and compute
+// Requires VK_KHR_shader_float16_int8 extension
+
+layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
+
+// Storage buffers - float16 data types
+layout(std430, set = 0, binding = 0) readonly buffer QueryBuffer {
+    float16_t data[];
+} Q;
+
+layout(std430, set = 0, binding = 1) readonly buffer KeyBuffer {
+    float16_t data[];
+} K;
+
+layout(std430, set = 0, binding = 2) readonly buffer ValueBuffer {
+    float16_t data[];
+} V;
+
+layout(std430, set = 0, binding = 3) writeonly buffer OutputBuffer {
+    float16_t data[];
+} O;
+
+layout(std430, set = 0, binding = 4) readonly buffer RotaryCosBuffer {
+    float16_t data[];
+} RotCos;
+
+layout(std430, set = 0, binding = 5) readonly buffer RotarySinBuffer {
+    float16_t data[];
+} RotSin;
+
+layout(push_constant) uniform PushConstants {
+    uint batch_size;
+    uint num_heads;
+    uint seq_len;
+    uint head_dim;
+    float scale;
+    uint causal;
+    uint has_rope;
+    uint num_kv_heads;
+} pc;
+
+// Shared memory tiles - FP16 compute
+shared float16_t sm_q[32 * 32];
+shared float16_t sm_k[32 * 33];  // +1 to avoid bank conflicts
+shared float16_t sm_v[32 * 32];
+
+// Main compute shader
+void main() {
+    const uint batch_id = gl_GlobalInvocationID.z / pc.num_heads;
+    const uint head_id = gl_GlobalInvocationID.z % pc.num_heads;
+    const uint seq_id = gl_GlobalInvocationID.y;
+    const uint head_dim_id = gl_GlobalInvocationID.x;
+
+    // Early exit if out of bounds
+    if (batch_id >= pc.batch_size || head_id >= pc.num_heads ||
+        seq_id >= pc.seq_len || head_dim_id >= pc.head_dim) {
+        return;
+    }
+
+    const uint q_kv_ratio = pc.num_heads / pc.num_kv_heads;
+    const uint kv_head_id = head_id / q_kv_ratio;
+
+    // Load Q tile
+    const uint q_offset = ((batch_id * pc.num_heads + head_id) * pc.seq_len + seq_id) * pc.head_dim + head_dim_id;
+    const float16_t q_val = Q.data[q_offset];
+
+    // Apply rotary embedding if needed
+    float16_t q_real = q_val;
+    float16_t q_imag = float16_t(0.0);
+    if (pc.has_rope == 1 && head_dim_id < pc.head_dim / 2) {
+        const uint rope_idx = head_dim_id;
+        const float16_t cos_val = RotCos.data[seq_id * (pc.head_dim / 2) + rope_idx];
+        const float16_t sin_val = RotSin.data[seq_id * (pc.head_dim / 2) + rope_idx];
+        const uint q_imag_offset = q_offset + pc.head_dim / 2;
+        const float16_t q_imag_val = Q.data[q_imag_offset];
+        q_real = float16_t(float(q_val) * float(cos_val) - float(q_imag_val) * float(sin_val));
+        q_imag = float16_t(float(q_val) * float(sin_val) + float(q_imag_val) * float(cos_val));
+    }
+
+    // FlashAttention algorithm
+    float16_t max_val = float16_t(-10000.0);
+    float16_t sum = float16_t(0.0);
+    float16_t acc[32];  // Accumulator for output
+
+    // Initialize accumulators
+    for (uint i = 0; i < 32; i++) {
+        acc[i] = float16_t(0.0);
+    }
+
+    const uint num_blocks = (pc.seq_len + 31) / 32;
+
+    for (uint block = 0; block < num_blocks; block++) {
+        // Load K tile into shared memory
+        const uint k_block_start = block * 32;
+        for (uint i = 0; i < 32; i += 4) {  // Load 4 rows at a time
+            const uint row = (gl_LocalInvocationID.y + i) % 32;
+            const uint k_row = k_block_start + row;
+            if (k_row < pc.seq_len) {
+                const uint k_load_offset = ((batch_id * pc.num_kv_heads + kv_head_id) * pc.seq_len + k_row) * pc.head_dim + head_dim_id;
+                sm_k[(row * 33) + gl_LocalInvocationID.x] = K.data[k_load_offset];
+            }
+        }
+
+        // Load V tile into shared memory
+        for (uint i = 0; i < 32; i += 4) {
+            const uint row = (gl_LocalInvocationID.y + i) % 32;
+            const uint v_row = k_block_start + row;
+            if (v_row < pc.seq_len) {
+                const uint v_load_offset = ((batch_id * pc.num_kv_heads + kv_head_id) * pc.seq_len + v_row) * pc.head_dim + head_dim_id;
+                sm_v[(row * 32) + gl_LocalInvocationID.x] = V.data[v_load_offset];
+            }
+        }
+
+        memoryBarrierShared();
+        barrier();
+
+        // Compute attention scores for this block
+        for (uint j = 0; j < 32; j++) {
+            const uint k_row = k_block_start + j;
+            if (k_row >= pc.seq_len) break;
+
+            // Causal masking
+            if (pc.causal == 1 && k_row > seq_id) {
+                continue;
+            }
+
+            // Compute q[k_row] dot product
+            float16_t score = float16_t(0.0);
+            for (uint d = 0; d < pc.head_dim; d += 4) {  // Vectorized load
+                const uint q_idx = d;
+                const uint k_idx = (j * 33) + (gl_LocalInvocationID.x + d) % 33;
+                if (d < pc.head_dim - 3) {
+                    score += sm_q[(gl_LocalInvocationID.y * 32) + q_idx] * sm_k[k_idx];
+                } else {
+                    // Handle remaining elements
+                    for (uint rem = 0; rem < pc.head_dim - d; rem++) {
+                        score += sm_q[(gl_LocalInvocationID.y * 32) + q_idx + rem] * sm_k[k_idx + rem];
+                    }
+                }
+            }
+
+            // Apply scale
+            score *= float16_t(pc.scale);
+
+            // Update max for numerical stability
+            const float16_t prev_max = max_val;
+            max_val = max(max_val, score);
+
+            // Compute exp and update accumulator
+            if (max_val != prev_max) {
+                const float16_t diff = prev_max - max_val;
+                for (uint i = 0; i < 32; i++) {
+                    acc[i] *= float16_t(exp(float(diff)));
+                }
+                sum *= float16_t(exp(float(diff)));
+            }
+
+            const float16_t exp_score = float16_t(exp(float(score - max_val)));
+            sum += exp_score;
+
+            // Update output accumulator
+            for (uint d = 0; d < pc.head_dim; d++) {
+                acc[d] += exp_score * sm_v[(j * 32) + d];
+            }
+        }
+
+        memoryBarrierShared();
+        barrier();
+    }
+
+    // Normalize output
+    const float16_t norm = float16_t(1.0) / (sum + float16_t(1e-8));
+    for (uint d = 0; d < pc.head_dim; d++) {
+        acc[d] *= norm;
+    }
+
+    // Store output
+    const uint out_offset = ((batch_id * pc.num_heads + head_id) * pc.seq_len + seq_id) * pc.head_dim + head_dim_id;
+    O.data[out_offset] = acc[head_dim_id];
+}
