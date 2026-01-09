@@ -122,6 +122,29 @@ pub const VulkanContext = struct {
             // try Self.logCooperativeMatrixProperties(allocator, vki, physical_device);
         }
 
+        // Prepare enabled extensions
+        var enabled_extensions = std.ArrayList([*:0]const u8).init(allocator);
+        defer enabled_extensions.deinit();
+
+        // Always try to enable these if available
+        const target_extensions = [_][:0]const u8{
+            "VK_KHR_shader_bfloat16",
+            "VK_KHR_cooperative_matrix",
+            "VK_INTEL_subgroup_matrix_multiply_accumulate",
+            "VK_KHR_shader_float16_int8",
+            "VK_KHR_vulkan_memory_model",
+            "VK_KHR_8bit_storage",
+            "VK_KHR_16bit_storage",
+            "VK_KHR_shader_atomic_float",
+        };
+
+        for (target_extensions) |ext_name| {
+            if (hasExtension(extensions, ext_name)) {
+                try enabled_extensions.append(ext_name);
+                log.info("Enabling device extension: {s}", .{ext_name});
+            }
+        }
+
         // Create logical device with compute queue
         const queue_priority: f32 = 1.0;
         const queue_create_info = vk.DeviceQueueCreateInfo{
@@ -135,8 +158,8 @@ pub const VulkanContext = struct {
             .p_queue_create_infos = @ptrCast(&queue_create_info),
             .enabled_layer_count = 0,
             .pp_enabled_layer_names = null,
-            .enabled_extension_count = 0,
-            .pp_enabled_extension_names = null,
+            .enabled_extension_count = @intCast(enabled_extensions.items.len),
+            .pp_enabled_extension_names = enabled_extensions.items.ptr,
             .p_enabled_features = null,
         }, null);
 
