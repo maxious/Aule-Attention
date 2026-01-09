@@ -1,15 +1,15 @@
-#version 450 core
+ #version 450 core
 
-#pragma use_vulkan_memory_model
-#extension GL_KHR_shader_subgroup_basic : enable
-#extension GL_EXT_scalar_block_layout : enable
-#extension GL_KHR_memory_scope_semantics : enable
-#extension GL_KHR_cooperative_matrix : enable
-#extension GL_EXT_shader_explicit_arithmetic_types : enable
-#extension GL_EXT_buffer_reference : enable
-#extension GL_EXT_control_flow_attributes : enable
-#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
-#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+ #pragma use_vulkan_memory_model
+ #extension GL_KHR_shader_subgroup_basic : enable
+ #extension GL_EXT_scalar_block_layout : enable
+ #extension GL_KHR_memory_scope_semantics : enable
+ #extension GL_KHR_cooperative_matrix : enable
+ #extension GL_EXT_shader_explicit_arithmetic_types : enable
+ #extension GL_EXT_buffer_reference : enable
+ #extension GL_EXT_control_flow_attributes : enable
+ #extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
+ #extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
 
 // FlashAttention-2 Forward Pass - BF16
 // Uses cooperative matrix with manual BF16 unpacking (since KHR_coopmat doesn't support BF16 layout natively yet)
@@ -56,19 +56,17 @@ shared float s_S[BLOCK_SIZE * BLOCK_SIZE];
 #define V_IDX(row, col) ((row) * SHMEM_STRIDE + (col))
 #define S_IDX(row, col) ((row) * BLOCK_SIZE + (col))
 
-// BF16 Helper Functions
-float unpackBfloat16(uint16_t val) {
-    uint val32 = uint(val) << 16;
-    return uintBitsToFloat(val32);
-}
+ // BF16 Helper Functions - using GL_EXT_shader_explicit_arithmetic_types_float16
+ // Note: SPV_INTEL_bfloat16_* extensions not available in this glslc version
+ float unpackBfloat16(uint16_t val) {
+     uint val32 = uint(val) << 16;
+     return uintBitsToFloat(val32);
+ }
 
-uint16_t packBfloat16(float val) {
-    uint val32 = floatBitsToUint(val);
-    // Round to nearest even would be better, but truncation is fast
-    // Rounding: val32 + 0x8000 (check overflow? NaN?)
-    // Simple truncation:
-    return uint16_t(val32 >> 16);
-}
+ uint16_t packBfloat16(float val) {
+     uint val32 = floatBitsToUint(val);
+     return uint16_t(val32 >> 16);
+ }
 
 void main() {
     uint tid = gl_LocalInvocationIndex;

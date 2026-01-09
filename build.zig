@@ -131,11 +131,23 @@ pub fn build(b: *std.Build) void {
     const copy_kv_paged_spv = copy_kv_paged_compile.addOutputFileArg("copy_kv_to_paged.spv");
     copy_kv_paged_compile.addFileArg(b.path("shaders/copy_kv_to_paged.comp"));
 
-    const attention_coopmat_compile = b.addSystemCommand(&.{ "glslc", "-O", "--target-env=vulkan1.2", "-o" });
+    // BF16 Cooperative Matrix shader
+    const attention_coopmat_compile = b.addSystemCommand(&.{
+        "glslc",
+        "-O",
+        "--target-env=vulkan1.2",
+        "-o",
+    });
     const attention_coopmat_spv = attention_coopmat_compile.addOutputFileArg("attention_bf16_coopmat.spv");
     attention_coopmat_compile.addFileArg(b.path("shaders/attention_bf16_coopmat.comp"));
 
-    const attention_fp16_coopmat_compile = b.addSystemCommand(&.{ "glslc", "-O", "--target-env=vulkan1.2", "-o" });
+    // FP16 Cooperative Matrix shader
+    const attention_fp16_coopmat_compile = b.addSystemCommand(&.{
+        "glslc",
+        "-O",
+        "--target-env=vulkan1.2",
+        "-o",
+    });
     const attention_fp16_coopmat_spv = attention_fp16_coopmat_compile.addOutputFileArg("attention_f16_coopmat.spv");
     attention_fp16_coopmat_compile.addFileArg(b.path("shaders/attention_f16_coopmat.comp"));
 
