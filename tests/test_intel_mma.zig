@@ -54,24 +54,31 @@ test "Intel XMX/MMA BF16: correctness test" {
     };
     defer engine.deinit();
 
+    if (engine.backend != .vulkan) {
+        log.warn("Skipping Intel MMA test: Backend is {s} (requires Vulkan). Please ensure Vulkan drivers are installed and a GPU is available.", .{engine.getBackendName()});
+        return;
+    }
+
     // Verify Intel XMX/MMA support
     var has_intel_mma = false;
     if (engine.vulkan_ctx) |vctx| {
+        log.info("Selected Device: {s}", .{vctx.ctx.gpu_caps.getDeviceName()});
         has_intel_mma = (vctx.ctx.gpu_caps.vendor == .intel);
         if (has_intel_mma and !vctx.ctx.gpu_caps.hasIntelMMA()) {
             log.warn("Intel GPU detected but required extensions missing.", .{});
-            // Proceed anyway for now to test feature detection or emulation
         }
     }
 
     if (!has_intel_mma) {
-        log.warn("Skipping Intel MMA test: Intel XMX/MMA Hardware not detected", .{});
-        return;
+        log.warn("Intel XMX/MMA Hardware not detected (Vendor={?})", .{if (engine.vulkan_ctx) |v| v.ctx.gpu_caps.vendor else null});
+        log.warn("Forcing execution as requested...", .{});
+        // return; // FORCE RUN
+    } else {
+        log.info("Intel Hardware detected, proceeding with MMA correctness test...", .{});
     }
 
-    log.info("Intel Hardware detected, proceeding with MMA correctness test...", .{});
-
     // Configuration
+
     const batch_size: u32 = 1;
     const num_heads: u32 = 1;
     const seq_len: u32 = 1; // M=1
