@@ -4,12 +4,19 @@
 
 ; ============ Capabilities and Extensions ============
 OpCapability Shader
+OpCapability Int16
+OpCapability Vector16
 OpCapability SubgroupMatrixMultiplyAccumulateINTEL
+OpCapability SubgroupDispatch
+OpCapability BFloat16ConversionINTEL
+OpCapability GroupNonUniform
 OpExtension "SPV_INTEL_subgroup_matrix_multiply_accumulate"
+OpExtension "SPV_INTEL_bfloat16_conversion"
 OpExtension "SPV_KHR_vulkan_memory_model"
 OpMemoryModel Logical GLSL450
-OpEntryPoint GLCompute %main "main"
+OpEntryPoint GLCompute %main "main" %subgroup_local_id %subgroup_id_var %Q_buffer %K_buffer %V_buffer %O_buffer %LSE_buffer %PushConstant
 OpExecutionMode %main LocalSize 32 1 1
+OpExecutionMode %main SubgroupSize 8
 
 ; ============ Decorations ============
 OpDecorate %Q_buffer DescriptorSet 0
@@ -22,6 +29,17 @@ OpDecorate %O_buffer DescriptorSet 0
 OpDecorate %O_buffer Binding 3
 OpDecorate %LSE_buffer DescriptorSet 0
 OpDecorate %LSE_buffer Binding 4
+OpDecorate %subgroup_local_id BuiltIn SubgroupLocalInvocationId
+OpDecorate %subgroup_id_var BuiltIn SubgroupId
+
+; Buffer Block Decorations
+OpDecorate %StructU32 Block
+OpMemberDecorate %StructU32 0 Offset 0
+OpDecorate %ArrayU32 ArrayStride 4
+
+OpDecorate %StructU16 Block
+OpMemberDecorate %StructU16 0 Offset 0
+OpDecorate %ArrayU16 ArrayStride 2
 
 ; ============ Types and Constants ============
 %void = OpTypeVoid
@@ -32,105 +50,133 @@ OpDecorate %LSE_buffer Binding 4
 %uint_32 = OpConstant %uint32 32
 %uint_16 = OpConstant %uint32 16
 %uint_8 = OpConstant %uint32 8
+%uint_7 = OpConstant %uint32 7
+%uint_6 = OpConstant %uint32 6
+%uint_5 = OpConstant %uint32 5
 %uint_4 = OpConstant %uint32 4
+%uint_3 = OpConstant %uint32 3
 %uint_2 = OpConstant %uint32 2
 %uint_1 = OpConstant %uint32 1
 %uint_0 = OpConstant %uint32 0
-%float_neg_inf = OpConstant %float -3.4028235e+38
 %float_0 = OpConstant %float 0.0
-%float_1 = OpConstant %float 1.0
-%uint_3000 = OpConstant %uint32 12288
+%accumulator_null = OpConstantNull %float
 
 %v2float = OpTypeVector %float 2
-%v4float = OpTypeVector %float 4
+%v8uint = OpTypeVector %uint32 8
+%v2uint = OpTypeVector %uint32 2
 
 %fn_void = OpTypeFunction %void
-%fn_float = OpTypeFunction %float %uint16
 
-%ptr_ubo = OpTypePointer Uniform %uint32
-%ptr_input = OpTypePointer StorageBuffer %uint16
-%ptr_output = OpTypePointer StorageBuffer %uint16
-%ptr_local = OpTypePointer Function %float
-%ptr_func_u16 = OpTypePointer Function %uint16
+; Array and Struct Types
+%ArrayU32 = OpTypeRuntimeArray %uint32
+%StructU32 = OpTypeStruct %ArrayU32
 
-%QueryBuffer = OpTypeStruct %uint16
-%KeyBuffer = OpTypeStruct %uint16
-%ValueBuffer = OpTypeStruct %uint16
-%OutputBuffer = OpTypeStruct %uint16
-%LogSumExpBuffer = OpTypeStruct %uint16
+%ArrayU16 = OpTypeRuntimeArray %uint16
+%StructU16 = OpTypeStruct %ArrayU16
+
+; Pointer types
+%ptr_pushconst = OpTypePointer PushConstant %uint32
+%ptr_sb_struct_u32 = OpTypePointer StorageBuffer %StructU32
+%ptr_sb_struct_u16 = OpTypePointer StorageBuffer %StructU16
+
+%ptr_sb_u32 = OpTypePointer StorageBuffer %uint32
+%ptr_sb_u16 = OpTypePointer StorageBuffer %uint16
+
+%ptr_local_f = OpTypePointer Function %float
+%ptr_local_u32 = OpTypePointer Function %uint32
+%ptr_input_v8uint = OpTypePointer Function %v8uint
+%ptr_builtin_input = OpTypePointer Input %uint32
 
 ; ============ Global Variables ============
-%Q_buffer = OpVariable %ptr_input StorageBuffer
-%K_buffer = OpVariable %ptr_input StorageBuffer
-%V_buffer = OpVariable %ptr_input StorageBuffer
-%O_buffer = OpVariable %ptr_output StorageBuffer
-%LSE_buffer = OpVariable %ptr_output StorageBuffer
-%PushConstant = OpVariable %ptr_ubo PushConstant
+; Q and K defined as uint32 buffers for efficient packed loading
+%Q_buffer = OpVariable %ptr_sb_struct_u32 StorageBuffer
+%K_buffer = OpVariable %ptr_sb_struct_u32 StorageBuffer
+%V_buffer = OpVariable %ptr_sb_struct_u16 StorageBuffer
+%O_buffer = OpVariable %ptr_sb_struct_u16 StorageBuffer
+%LSE_buffer = OpVariable %ptr_sb_struct_u16 StorageBuffer
+%PushConstant = OpVariable %ptr_pushconst PushConstant
 
-; ============ BF16 Helper Functions ============
-%unpack_bf16 = OpFunction %float None %fn_float
-%param_val = OpFunctionParameter %uint16
-%entry_unpack = OpLabel
-%val32 = OpUConvert %uint32 %param_val
-%val_shifted = OpShiftLeftLogical %uint32 %val32 %uint_16
-%result = OpBitcast %float %val_shifted
-OpReturnValue %result
-OpFunctionEnd
-
-%pack_bf16 = OpFunction %uint16 None %fn_float
-%param_f = OpFunctionParameter %float
-%entry_pack = OpLabel
-%f_bits = OpBitcast %uint32 %param_f
-%f_shifted = OpShiftRightLogical %uint32 %f_bits %uint_16
-%result2 = OpUConvert %uint16 %f_shifted
-OpReturnValue %result2
-OpFunctionEnd
+; Input variables
+%subgroup_local_id = OpVariable %ptr_builtin_input Input
+%subgroup_id_var = OpVariable %ptr_builtin_input Input
 
 ; ============ Main Function ============
 %main = OpFunction %void None %fn_void
 %entry_main = OpLabel
 
-; Get subgroup/lane info
-%subgroup_lane = OpVariable %ptr_func_u16 Function
-%subgroup_id = OpVariable %ptr_func_u16 Function
-%lane = OpLoad %uint32 %subgroup_lane
-%lane_masked = OpBitwiseAnd %uint32 %lane %uint_31
-%sg_id = OpLoad %uint32 %subgroup_id
-%sg_id_shift = OpShiftRightLogical %uint32 %sg_id %uint_5
-%sg_id_masked = OpBitwiseAnd %uint32 %sg_id_shift %uint_1
+; Get lane info
+%lane = OpLoad %uint32 %subgroup_local_id
 
-; Load Q element (BF16 -> float)
-%q_idx = OpVariable %ptr_local Function
-%q_row = OpVariable %ptr_local Function
-%q_col = OpVariable %ptr_local Function
-%q_addr = OpAccessChain %ptr_input %Q_buffer %q_idx
-%q_val_u16 = OpLoad %uint16 %q_addr
-%q_val_f = OpFunctionCall %float %unpack_bf16 %q_val_u16
+; ==========================================================
+; 1. Load Matrix A (Q) - M=1, K=16 (SG8)
+;    Type: uint32 (Packed Pair of BF16)
+;    Each lane contributes 2 BF16s (1 uint32) to the 1x16 row.
+;    Addressing: Simple linear mapping for this test.
+;    Q_idx = LaneID (Lane 0 loads Q[0..1], Lane 1 loads Q[2..3], etc.)
+; ==========================================================
+%q_ptr = OpAccessChain %ptr_sb_u32 %Q_buffer %uint_0 %lane
+%q_packed = OpLoad %uint32 %q_ptr
 
-; Load K element (BF16 -> float)
-%k_idx = OpVariable %ptr_local Function
-%k_row = OpVariable %ptr_local Function
-%k_col = OpVariable %ptr_local Function
-%k_addr = OpAccessChain %ptr_input %K_buffer %k_idx
-%k_val_u16 = OpLoad %uint16 %k_addr
-%k_val_f = OpFunctionCall %float %unpack_bf16 %k_val_u16
+; ==========================================================
+; 2. Load Matrix B (K) - K=16, N=8 (SG8)
+;    Type: v8uint (8 Packed Pairs of BF16 = 16 BF16s)
+;    Each lane contributes ONE COLUMN (16 rows x 1 col) of B.
+;    This corresponds to 16 BF16s for the Key associated with this lane.
+;    We load 16 BF16s -> 8 uint32s.
+;    Addressing: K_idx_base = LaneID * 8 (Assuming contiguous blocks per key for test)
+; ==========================================================
+%k_base_idx = OpIMul %uint32 %lane %uint_8
+%k_ptr_0 = OpAccessChain %ptr_sb_u32 %K_buffer %uint_0 %k_base_idx
+%k_val_0 = OpLoad %uint32 %k_ptr_0
 
-; Intel MMA Operation: Result = A * B + C
-; Result Type = vec2 (M=2), K Dim = 16
-; MatrixAPackedBFloat16INTEL = 0x1000, MatrixBPackedBFloat16INTEL = 0x2000
-; Combined operand = 0x3000
-%q_packed = OpUndef %uint32
-%k_packed = OpUndef %uint32
-%accumulator = OpConstantNull %v2float
-%mma_result = OpSubgroupMatrixMultiplyAccumulateINTEL %v2float %uint_16 %q_packed %k_packed %accumulator MatrixAPackedBFloat16INTEL|MatrixBPackedBFloat16INTEL
+%k_idx_1 = OpIAdd %uint32 %k_base_idx %uint_1
+%k_ptr_1 = OpAccessChain %ptr_sb_u32 %K_buffer %uint_0 %k_idx_1
+%k_val_1 = OpLoad %uint32 %k_ptr_1
 
-; Scale the attention score
-%scaled = OpCompositeExtract %float %mma_result 0
+%k_idx_2 = OpIAdd %uint32 %k_base_idx %uint_2
+%k_ptr_2 = OpAccessChain %ptr_sb_u32 %K_buffer %uint_0 %k_idx_2
+%k_val_2 = OpLoad %uint32 %k_ptr_2
 
-; Store output (float -> BF16)
-%out_idx = OpVariable %ptr_local Function
-%out_addr = OpAccessChain %ptr_output %O_buffer %out_idx
-%output_bf16 = OpFunctionCall %uint16 %pack_bf16 %scaled
+%k_idx_3 = OpIAdd %uint32 %k_base_idx %uint_3
+%k_ptr_3 = OpAccessChain %ptr_sb_u32 %K_buffer %uint_0 %k_idx_3
+%k_val_3 = OpLoad %uint32 %k_ptr_3
+
+%k_idx_4 = OpIAdd %uint32 %k_base_idx %uint_4
+%k_ptr_4 = OpAccessChain %ptr_sb_u32 %K_buffer %uint_0 %k_idx_4
+%k_val_4 = OpLoad %uint32 %k_ptr_4
+
+%k_idx_5 = OpIAdd %uint32 %k_base_idx %uint_5
+%k_ptr_5 = OpAccessChain %ptr_sb_u32 %K_buffer %uint_0 %k_idx_5
+%k_val_5 = OpLoad %uint32 %k_ptr_5
+
+%k_idx_6 = OpIAdd %uint32 %k_base_idx %uint_6
+%k_ptr_6 = OpAccessChain %ptr_sb_u32 %K_buffer %uint_0 %k_idx_6
+%k_val_6 = OpLoad %uint32 %k_ptr_6
+
+%k_idx_7 = OpIAdd %uint32 %k_base_idx %uint_7
+%k_ptr_7 = OpAccessChain %ptr_sb_u32 %K_buffer %uint_0 %k_idx_7
+%k_val_7 = OpLoad %uint32 %k_ptr_7
+
+; Construct v8uint
+%k_packed = OpCompositeConstruct %v8uint %k_val_0 %k_val_1 %k_val_2 %k_val_3 %k_val_4 %k_val_5 %k_val_6 %k_val_7
+
+; ==========================================================
+; 3. MMA Operation
+;    Result = A * B + C
+;    M=1, N=8, K=16
+;    Result: float (M=1)
+;    A: uint32
+;    B: v8uint
+;    C: float
+; ==========================================================
+%mma_result = OpSubgroupMatrixMultiplyAccumulateINTEL %float %uint_16 %q_packed %k_packed %accumulator_null MatrixAPackedBFloat16INTEL|MatrixBPackedBFloat16INTEL
+
+; ==========================================================
+; 4. Store Result
+;    Convert float -> BF16 -> Store
+; ==========================================================
+%out_addr = OpAccessChain %ptr_sb_u16 %O_buffer %uint_0 %lane
+%output_bf16 = OpConvertFToBF16INTEL %uint16 %mma_result
 OpStore %out_addr %output_bf16
 
 OpReturn
