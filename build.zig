@@ -302,6 +302,28 @@ pub fn build(b: *std.Build) void {
     const paged_attention_test_step = b.step("test-paged", "Run paged attention tests");
     paged_attention_test_step.dependOn(&run_paged_attention_tests.step);
 
+    // Tests - Intel MMA
+    const intel_mma_tests = b.addTest(.{
+        .root_source_file = b.path("tests/test_intel_mma.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    intel_mma_tests.root_module.addImport("vulkan", vulkan_mod);
+    intel_mma_tests.root_module.addOptions("config", options);
+    intel_mma_tests.root_module.addImport("aule", static_lib.root_module);
+    intel_mma_tests.root_module.addAnonymousImport("attention_f32_spv", .{ .root_source_file = attention_f32_spv });
+    intel_mma_tests.root_module.addAnonymousImport("attention_amd_spv", .{ .root_source_file = attention_amd_spv });
+    intel_mma_tests.root_module.addAnonymousImport("attention_paged_spv", .{ .root_source_file = attention_paged_spv });
+    intel_mma_tests.root_module.addAnonymousImport("copy_kv_to_paged_spv", .{ .root_source_file = copy_kv_paged_spv });
+    intel_mma_tests.root_module.addAnonymousImport("attention_bf16_intel_mma_spv", .{ .root_source_file = attention_bf16_intel_mma_spv });
+    intel_mma_tests.root_module.addAnonymousImport("attention_bf16_spv", .{ .root_source_file = attention_bf16_spv });
+    intel_mma_tests.linkSystemLibrary("vulkan");
+    intel_mma_tests.linkLibC();
+
+    const run_intel_mma_tests = b.addRunArtifact(intel_mma_tests);
+    const intel_mma_test_step = b.step("test-intel-mma", "Run Intel MMA tests");
+    intel_mma_test_step.dependOn(&run_intel_mma_tests.step);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_attention_tests.step);
     test_step.dependOn(&run_block_pool_tests.step);
