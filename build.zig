@@ -151,6 +151,9 @@ pub fn build(b: *std.Build) void {
     const attention_fp16_coopmat_spv = attention_fp16_coopmat_compile.addOutputFileArg("attention_f16_coopmat.spv");
     attention_fp16_coopmat_compile.addFileArg(b.path("shaders/attention_f16_coopmat.comp"));
 
+    // Intel XMX/MMA BF16 shader (placeholder - requires newer glslc)
+    const attention_bf16_intel_mma_spv = b.path("shaders/attention_bf16_intel_mma.spv");
+
     // --- BF16 Shaders (Emulated via GLSL) ---
     // Use GLSL-compiled BF16 shader (emulated)
     const attention_bf16_spv = b.path("shaders/attention_bf16.spv");
@@ -191,6 +194,7 @@ pub fn build(b: *std.Build) void {
     lib.root_module.addAnonymousImport("copy_kv_to_paged_spv", .{ .root_source_file = copy_kv_paged_spv });
     lib.root_module.addAnonymousImport("attention_bf16_coopmat_spv", .{ .root_source_file = attention_coopmat_spv });
     lib.root_module.addAnonymousImport("attention_fp16_coopmat_spv", .{ .root_source_file = attention_fp16_coopmat_spv });
+    lib.root_module.addAnonymousImport("attention_bf16_intel_mma_spv", .{ .root_source_file = attention_bf16_intel_mma_spv });
     lib.root_module.addAnonymousImport("attention_bf16_spv", .{ .root_source_file = attention_bf16_spv });
 
     // Link Vulkan on native builds only - cross-compilation uses runtime dynamic loading
@@ -237,6 +241,7 @@ pub fn build(b: *std.Build) void {
     static_lib.root_module.addAnonymousImport("copy_kv_to_paged_spv", .{ .root_source_file = copy_kv_paged_spv });
     static_lib.root_module.addAnonymousImport("attention_bf16_coopmat_spv", .{ .root_source_file = attention_coopmat_spv });
     static_lib.root_module.addAnonymousImport("attention_fp16_coopmat_spv", .{ .root_source_file = attention_fp16_coopmat_spv });
+    static_lib.root_module.addAnonymousImport("attention_bf16_intel_mma_spv", .{ .root_source_file = attention_bf16_intel_mma_spv });
     static_lib.root_module.addAnonymousImport("attention_bf16_spv", .{ .root_source_file = attention_bf16_spv });
 
     static_lib.linkSystemLibrary("vulkan");
@@ -289,6 +294,7 @@ pub fn build(b: *std.Build) void {
     paged_attention_tests.root_module.addAnonymousImport("copy_kv_to_paged_spv", .{ .root_source_file = copy_kv_paged_spv });
     paged_attention_tests.root_module.addAnonymousImport("attention_bf16_coopmat_spv", .{ .root_source_file = attention_coopmat_spv });
     paged_attention_tests.root_module.addAnonymousImport("attention_fp16_coopmat_spv", .{ .root_source_file = attention_fp16_coopmat_spv });
+    paged_attention_tests.root_module.addAnonymousImport("attention_bf16_intel_mma_spv", .{ .root_source_file = attention_bf16_intel_mma_spv });
     paged_attention_tests.linkSystemLibrary("vulkan");
     paged_attention_tests.linkLibC();
 

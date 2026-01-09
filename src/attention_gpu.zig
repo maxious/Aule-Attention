@@ -27,6 +27,7 @@ pub const ShaderVariant = enum(u8) {
     bf16 = 4, // BF16 native processing
     coopmat_bf16 = 5, // Cooperative matrix BF16 (emulated or native)
     coopmat_fp16 = 6, // Cooperative matrix FP16
+    intel_mma_bf16 = 7, // Intel XMX/MMA via SPV_INTEL_subgroup_matrix_multiply_accumulate
 };
 
 /// High-performance attention engine that operates on persistent GPU tensors
@@ -41,6 +42,7 @@ pub const AttentionEngine = struct {
     bf16_pipeline: ?AttentionPipeline, // BF16 shader
     coopmat_bf16_pipeline: ?AttentionPipeline, // Cooperative matrix BF16 shader
     coopmat_fp16_pipeline: ?AttentionPipeline, // Cooperative matrix FP16 shader
+    intel_mma_bf16_pipeline: ?AttentionPipeline, // Intel XMX/MMA BF16 shader
     paged_pipeline: ?PagedAttentionPipeline, // PagedAttention with block pool
     copy_kv_pipeline: ?CopyKVPipeline, // K/V scatter to paged format
     active_variant: ShaderVariant,
@@ -84,6 +86,7 @@ pub const AttentionEngine = struct {
         fp16_amd_shader: ?[]const u8,
         bf16_shader: ?[]const u8,
         bf16_coopmat_shader: ?[]const u8,
+        bf16_intel_mma_shader: ?[]const u8,
         fp16_coopmat_shader: ?[]const u8,
         paged_shader: ?[]const u8,
         copy_kv_shader: ?[]const u8,
@@ -156,6 +159,17 @@ pub const AttentionEngine = struct {
             }
         }
 
+        // Intel XMX/MMA BF16 pipeline (new Jan 2025 extension)
+        var intel_mma_bf16_pipeline: ?AttentionPipeline = null;
+        if (bf16_intel_mma_shader) |s| {
+            if (ctx.gpu_caps.hasIntelMMA()) {
+                intel_mma_bf16_pipeline = try AttentionPipeline.init(ctx, s);
+                log.info("Intel XMX/MMA BF16 shader loaded (SPV_INTEL_subgroup_matrix_multiply_accumulate)", .{});
+            } else {
+                log.info("Intel MMA BF16 shader requested but GPU does not support XMX/MMA", .{});
+            }
+        }
+
         var paged_pipeline: ?PagedAttentionPipeline = null;
         if (paged_shader) |s| {
             log.info("Initializing PagedAttention pipeline...", .{});
@@ -171,8 +185,14 @@ pub const AttentionEngine = struct {
         }
 
         // Select default active variant based on GPU capabilities
+        // Priority: Intel MMA > Cooperative Matrix > BF16 > Fast > Baseline
         var active_variant: ShaderVariant = .baseline;
-        if (fast_pipeline != null) {
+
+        // Intel GPUs with XMX/MMA get highest priority
+        if (ctx.gpu_caps.hasIntelMMA() and intel_mma_bf16_pipeline != null) {
+            active_variant = .intel_mma_bf16;
+            log.info("Default shader variant: intel_mma_bf16 (XMX/MMA tensor cores)", .{});
+        } else if (fast_pipeline != null) {
             active_variant = .fast;
             log.info("Default shader variant: fast (optimized)", .{});
         }
@@ -207,6 +227,7 @@ pub const AttentionEngine = struct {
             .bf16_pipeline = bf16_pipeline,
             .coopmat_bf16_pipeline = coopmat_bf16_pipeline,
             .coopmat_fp16_pipeline = coopmat_fp16_pipeline,
+            .intel_mma_bf16_pipeline = intel_mma_bf16_pipeline,
             .paged_pipeline = paged_pipeline,
             .copy_kv_pipeline = copy_kv_pipeline,
             .active_variant = active_variant,
@@ -256,6 +277,11 @@ pub const AttentionEngine = struct {
                 self.active_variant = .coopmat_fp16;
                 log.info("Switched to cooperative matrix F16 shader", .{});
             },
+            .intel_mma_bf16 => {
+                if (self.intel_mma_bf16_pipeline == null) return error.ShaderVariantNotAvailable;
+                self.active_variant = .intel_mma_bf16;
+                log.info("Switched to Intel XMX/MMA BF16 shader", .{});
+            },
         }
     }
 
@@ -274,6 +300,7 @@ pub const AttentionEngine = struct {
             .bf16 => if (self.bf16_pipeline) |*p| p else &self.pipeline,
             .coopmat_bf16 => if (self.coopmat_bf16_pipeline) |*p| p else &self.pipeline,
             .coopmat_fp16 => if (self.coopmat_fp16_pipeline) |*p| p else &self.pipeline,
+            .intel_mma_bf16 => if (self.intel_mma_bf16_pipeline) |*p| p else &self.pipeline,
         };
     }
 

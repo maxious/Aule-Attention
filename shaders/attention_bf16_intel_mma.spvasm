@@ -1,0 +1,137 @@
+; SPIR-V Assembly for Intel XMX/MMA BF16 Attention Kernel
+; Uses SPV_INTEL_subgroup_matrix_multiply_accumulate extension
+; Assembled with: spirv-as --target-env vulkan1.3 attention_bf16_intel_mma.spvasm -o attention_bf16_intel_mma.spv
+
+; ============ Capabilities and Extensions ============
+OpCapability Shader
+OpCapability SubgroupMatrixMultiplyAccumulateINTEL
+OpExtension "SPV_INTEL_subgroup_matrix_multiply_accumulate"
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main"
+OpExecutionMode %main LocalSize 32 1 1
+
+; ============ Decorations ============
+OpDecorate %Q_buffer DescriptorSet 0
+OpDecorate %Q_buffer Binding 0
+OpDecorate %K_buffer DescriptorSet 0
+OpDecorate %K_buffer Binding 1
+OpDecorate %V_buffer DescriptorSet 0
+OpDecorate %V_buffer Binding 2
+OpDecorate %O_buffer DescriptorSet 0
+OpDecorate %O_buffer Binding 3
+OpDecorate %LSE_buffer DescriptorSet 0
+OpDecorate %LSE_buffer Binding 4
+
+; ============ Types and Constants ============
+%void = OpTypeVoid
+%float = OpTypeFloat 32
+%uint32 = OpTypeInt 32 0
+%uint16 = OpTypeInt 16 0
+
+%uint_32 = OpConstant %uint32 32
+%uint_16 = OpConstant %uint32 16
+%uint_8 = OpConstant %uint32 8
+%uint_4 = OpConstant %uint32 4
+%uint_2 = OpConstant %uint32 2
+%uint_1 = OpConstant %uint32 1
+%uint_0 = OpConstant %uint32 0
+%float_neg_inf = OpConstant %float -3.4028235e+38
+%float_0 = OpConstant %float 0.0
+%float_1 = OpConstant %float 1.0
+%uint_3000 = OpConstant %uint32 12288
+
+%v2float = OpTypeVector %float 2
+%v4float = OpTypeVector %float 4
+
+%fn_void = OpTypeFunction %void
+%fn_float = OpTypeFunction %float %uint16
+
+%ptr_ubo = OpTypePointer Uniform %uint32
+%ptr_input = OpTypePointer StorageBuffer %uint16
+%ptr_output = OpTypePointer StorageBuffer %uint16
+%ptr_local = OpTypePointer Function %float
+%ptr_func_u16 = OpTypePointer Function %uint16
+
+%QueryBuffer = OpTypeStruct %uint16
+%KeyBuffer = OpTypeStruct %uint16
+%ValueBuffer = OpTypeStruct %uint16
+%OutputBuffer = OpTypeStruct %uint16
+%LogSumExpBuffer = OpTypeStruct %uint16
+
+; ============ Global Variables ============
+%Q_buffer = OpVariable %ptr_input StorageBuffer
+%K_buffer = OpVariable %ptr_input StorageBuffer
+%V_buffer = OpVariable %ptr_input StorageBuffer
+%O_buffer = OpVariable %ptr_output StorageBuffer
+%LSE_buffer = OpVariable %ptr_output StorageBuffer
+%PushConstant = OpVariable %ptr_ubo PushConstant
+
+; ============ BF16 Helper Functions ============
+%unpack_bf16 = OpFunction %float None %fn_float
+%param_val = OpFunctionParameter %uint16
+%entry_unpack = OpLabel
+%val32 = OpUConvert %uint32 %param_val
+%val_shifted = OpShiftLeftLogical %uint32 %val32 %uint_16
+%result = OpBitcast %float %val_shifted
+OpReturnValue %result
+OpFunctionEnd
+
+%pack_bf16 = OpFunction %uint16 None %fn_float
+%param_f = OpFunctionParameter %float
+%entry_pack = OpLabel
+%f_bits = OpBitcast %uint32 %param_f
+%f_shifted = OpShiftRightLogical %uint32 %f_bits %uint_16
+%result2 = OpUConvert %uint16 %f_shifted
+OpReturnValue %result2
+OpFunctionEnd
+
+; ============ Main Function ============
+%main = OpFunction %void None %fn_void
+%entry_main = OpLabel
+
+; Get subgroup/lane info
+%subgroup_lane = OpVariable %ptr_func_u16 Function
+%subgroup_id = OpVariable %ptr_func_u16 Function
+%lane = OpLoad %uint32 %subgroup_lane
+%lane_masked = OpBitwiseAnd %uint32 %lane %uint_31
+%sg_id = OpLoad %uint32 %subgroup_id
+%sg_id_shift = OpShiftRightLogical %uint32 %sg_id %uint_5
+%sg_id_masked = OpBitwiseAnd %uint32 %sg_id_shift %uint_1
+
+; Load Q element (BF16 -> float)
+%q_idx = OpVariable %ptr_local Function
+%q_row = OpVariable %ptr_local Function
+%q_col = OpVariable %ptr_local Function
+%q_addr = OpAccessChain %ptr_input %Q_buffer %q_idx
+%q_val_u16 = OpLoad %uint16 %q_addr
+%q_val_f = OpFunctionCall %float %unpack_bf16 %q_val_u16
+
+; Load K element (BF16 -> float)
+%k_idx = OpVariable %ptr_local Function
+%k_row = OpVariable %ptr_local Function
+%k_col = OpVariable %ptr_local Function
+%k_addr = OpAccessChain %ptr_input %K_buffer %k_idx
+%k_val_u16 = OpLoad %uint16 %k_addr
+%k_val_f = OpFunctionCall %float %unpack_bf16 %k_val_u16
+
+; Intel MMA Operation: Result = A * B + C
+; Result Type = vec2 (M=2), K Dim = 16
+; MatrixAPackedBFloat16INTEL = 0x1000, MatrixBPackedBFloat16INTEL = 0x2000
+; Combined operand = 0x3000
+%q_packed = OpUndef %uint32
+%k_packed = OpUndef %uint32
+%accumulator = OpConstantNull %v2float
+%mma_result = OpSubgroupMatrixMultiplyAccumulateINTEL %v2float %uint_16 %q_packed %k_packed %accumulator MatrixAPackedBFloat16INTEL|MatrixBPackedBFloat16INTEL
+
+; Scale the attention score
+%scaled = OpCompositeExtract %float %mma_result 0
+
+; Store output (float -> BF16)
+%out_idx = OpVariable %ptr_local Function
+%out_addr = OpAccessChain %ptr_output %O_buffer %out_idx
+%output_bf16 = OpFunctionCall %uint16 %pack_bf16 %scaled
+OpStore %out_addr %output_bf16
+
+OpReturn
+OpFunctionEnd

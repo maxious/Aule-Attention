@@ -30,6 +30,7 @@ pub const GpuCapabilities = struct {
     fp16_supported: bool,
     bf16_supported: bool,
     cooperative_matrix_supported: bool,
+    subgroup_mma_supported: bool, // VK_INTEL_subgroup_matrix_multiply_accumulate
     subgroup_size: u32, // Wavefront/warp size
     device_name: [256]u8,
 
@@ -48,6 +49,11 @@ pub const GpuCapabilities = struct {
 
     pub fn getDeviceName(self: *const GpuCapabilities) []const u8 {
         return std.mem.sliceTo(&self.device_name, 0);
+    }
+
+    /// Check if this GPU supports Intel XMX/MMA tensor cores
+    pub fn hasIntelMMA(self: *const GpuCapabilities) bool {
+        return self.vendor == .intel and self.subgroup_mma_supported and self.bf16_supported;
     }
 };
 
@@ -110,7 +116,7 @@ pub const VulkanContext = struct {
         const gpu_caps = detectGpuCapabilities(device_properties, extensions);
         log.info("Selected GPU: {s}", .{gpu_caps.getDeviceName()});
         log.info("  Vendor: {s}, AMD Arch: {s}", .{ @tagName(gpu_caps.vendor), @tagName(gpu_caps.amd_arch) });
-        log.info("  Extensions checked: FP16={}, BF16={}, Coop Matrix={}, Subgroup size: {}", .{ gpu_caps.fp16_supported, gpu_caps.bf16_supported, gpu_caps.cooperative_matrix_supported, gpu_caps.subgroup_size });
+        log.info("  Extensions checked: FP16={}, BF16={}, Coop Matrix={}, Subgroup MMA={}, Subgroup size: {}", .{ gpu_caps.fp16_supported, gpu_caps.bf16_supported, gpu_caps.cooperative_matrix_supported, gpu_caps.subgroup_mma_supported, gpu_caps.subgroup_size });
 
         if (gpu_caps.cooperative_matrix_supported) {
             // try Self.logCooperativeMatrixProperties(allocator, vki, physical_device);
@@ -252,6 +258,7 @@ fn detectGpuCapabilities(props: vk.PhysicalDeviceProperties, extensions: []vk.Ex
         .fp16_supported = false,
         .bf16_supported = false,
         .cooperative_matrix_supported = false,
+        .subgroup_mma_supported = false,
         .subgroup_size = 32, // Default
         .device_name = undefined,
     };
@@ -264,6 +271,21 @@ fn detectGpuCapabilities(props: vk.PhysicalDeviceProperties, extensions: []vk.Ex
 
     // Check for cooperative matrix extension
     caps.cooperative_matrix_supported = hasExtension(extensions, "VK_KHR_cooperative_matrix");
+
+    // Check for Intel subgroup matrix multiply accumulate (new Jan 2025, enables native MMA)
+    // The extension may not be advertised even when hardware supports it (FlexGEMM found this)
+    // So we also check for Battlemage GPU by device name
+    const device_name_for_mma = std.mem.sliceTo(&props.device_name, 0);
+    const mma_arches = [_][]const u8{ "B60", "B580", "B570", "B550", "Max", "Ponte Vecchio", "PVC" };
+    var has_mma_arch = false;
+    for (mma_arches) |arch| {
+        if (std.mem.indexOf(u8, device_name_for_mma, arch) != null) {
+            has_mma_arch = true;
+            break;
+        }
+    }
+    caps.subgroup_mma_supported = (hasExtension(extensions, "VK_INTEL_subgroup_matrix_multiply_accumulate") or has_mma_arch) and
+        caps.bf16_supported; // MMA is most useful with BF16/FP16
 
     // Detect vendor from vendor ID
     // AMD: 0x1002, NVIDIA: 0x10DE, Intel: 0x8086, Apple: 0x106B
@@ -284,6 +306,18 @@ fn detectGpuCapabilities(props: vk.PhysicalDeviceProperties, extensions: []vk.Ex
             caps.vendor = .intel;
             caps.subgroup_size = 32; // Intel Arc uses 32-wide SIMD (vulkaninfo confirms)
             caps.fp16_supported = true; // Intel GPUs support FP16
+
+            // Check for MMA support via device name (FlexGEMM approach)
+            // Intel Arc B-series (Battlemage) and Data Center GPU Max support MMA/XMX
+            // The Vulkan extension may not be advertised but hardware supports it
+            const device_name = std.mem.sliceTo(&props.device_name, 0);
+            const mma_architectures = [_][]const u8{ "B60", "B580", "B570", "B550", "Max", "Ponte Vecchio", "PVC" };
+            for (mma_architectures) |arch| {
+                if (std.mem.indexOf(u8, device_name, arch) != null) {
+                    caps.subgroup_mma_supported = true;
+                    break;
+                }
+            }
         },
         0x106B => {
             caps.vendor = .apple;
