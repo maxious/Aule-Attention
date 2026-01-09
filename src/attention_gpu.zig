@@ -108,15 +108,23 @@ pub const AttentionEngine = struct {
         // Initialize optimized shader pipelines
         var fast_pipeline: ?AttentionPipeline = null;
         if (fast_shader) |s| {
-            fast_pipeline = try AttentionPipeline.init(ctx, s);
-            log.info("Fast FP32 shader loaded (32x32 blocks, vec4 loads, block skipping)", .{});
+            if (AttentionPipeline.init(ctx, s)) |p| {
+                fast_pipeline = p;
+                log.info("Fast FP32 shader loaded (32x32 blocks, vec4 loads, block skipping)", .{});
+            } else |err| {
+                log.warn("Failed to init fast pipeline: {}. Disabling.", .{err});
+            }
         }
 
         var fp16_pipeline: ?AttentionPipeline = null;
         if (fp16_shader) |s| {
             if (ctx.gpu_caps.fp16_supported) {
-                fp16_pipeline = try AttentionPipeline.init(ctx, s);
-                log.info("FP16 shader loaded", .{});
+                if (AttentionPipeline.init(ctx, s)) |p| {
+                    fp16_pipeline = p;
+                    log.info("FP16 shader loaded", .{});
+                } else |err| {
+                    log.warn("Failed to init FP16 pipeline: {}. Disabling.", .{err});
+                }
             } else {
                 log.warn("FP16 shader requested but GPU does not support FP16", .{});
             }
@@ -125,8 +133,12 @@ pub const AttentionEngine = struct {
         var fp16_amd_pipeline: ?AttentionPipeline = null;
         if (fp16_amd_shader) |s| {
             if (ctx.gpu_caps.fp16_supported and ctx.gpu_caps.isAmd()) {
-                fp16_amd_pipeline = try AttentionPipeline.init(ctx, s);
-                log.info("FP16 AMD-optimized shader loaded (64-wide wavefront)", .{});
+                if (AttentionPipeline.init(ctx, s)) |p| {
+                    fp16_amd_pipeline = p;
+                    log.info("FP16 AMD-optimized shader loaded (64-wide wavefront)", .{});
+                } else |err| {
+                    log.warn("Failed to init FP16 AMD pipeline: {}. Disabling.", .{err});
+                }
             }
         }
 
@@ -135,15 +147,23 @@ pub const AttentionEngine = struct {
             // Emulated BF16 shader works on all hardware (uses uint buffers)
             // No need to check for VK_KHR_shader_bfloat16
             log.info("Loading BF16 shader (emulated)", .{});
-            bf16_pipeline = try AttentionPipeline.init(ctx, s);
-            log.info("BF16 shader loaded successfully", .{});
+            if (AttentionPipeline.init(ctx, s)) |p| {
+                bf16_pipeline = p;
+                log.info("BF16 shader loaded successfully", .{});
+            } else |err| {
+                log.warn("Failed to init BF16 pipeline: {}. Disabling.", .{err});
+            }
         }
 
         var coopmat_bf16_pipeline: ?AttentionPipeline = null;
         if (bf16_coopmat_shader) |s| {
             if (ctx.gpu_caps.cooperative_matrix_supported) {
-                coopmat_bf16_pipeline = try AttentionPipeline.init(ctx, s);
-                log.info("Cooperative matrix BF16 shader loaded", .{});
+                if (AttentionPipeline.init(ctx, s)) |p| {
+                    coopmat_bf16_pipeline = p;
+                    log.info("Cooperative matrix BF16 shader loaded", .{});
+                } else |err| {
+                    log.warn("Failed to init CoopMat BF16 pipeline: {}. Disabling.", .{err});
+                }
             } else {
                 log.info("Cooperative matrix BF16 shader requested but GPU does not support VK_KHR_cooperative_matrix", .{});
             }
@@ -152,8 +172,12 @@ pub const AttentionEngine = struct {
         var coopmat_fp16_pipeline: ?AttentionPipeline = null;
         if (fp16_coopmat_shader) |s| {
             if (ctx.gpu_caps.cooperative_matrix_supported and ctx.gpu_caps.fp16_supported) {
-                coopmat_fp16_pipeline = try AttentionPipeline.init(ctx, s);
-                log.info("Cooperative matrix FP16 shader loaded", .{});
+                if (AttentionPipeline.init(ctx, s)) |p| {
+                    coopmat_fp16_pipeline = p;
+                    log.info("Cooperative matrix FP16 shader loaded", .{});
+                } else |err| {
+                    log.warn("Failed to init CoopMat FP16 pipeline: {}. Disabling.", .{err});
+                }
             } else {
                 log.info("Cooperative matrix FP16 shader requested but GPU does not support VK_KHR_cooperative_matrix or FP16", .{});
             }
@@ -163,8 +187,12 @@ pub const AttentionEngine = struct {
         var intel_mma_bf16_pipeline: ?AttentionPipeline = null;
         if (bf16_intel_mma_shader) |s| {
             if (ctx.gpu_caps.hasIntelMMA()) {
-                intel_mma_bf16_pipeline = try AttentionPipeline.init(ctx, s);
-                log.info("Intel XMX/MMA BF16 shader loaded (SPV_INTEL_subgroup_matrix_multiply_accumulate)", .{});
+                if (AttentionPipeline.init(ctx, s)) |p| {
+                    intel_mma_bf16_pipeline = p;
+                    log.info("Intel XMX/MMA BF16 shader loaded (SPV_INTEL_subgroup_matrix_multiply_accumulate)", .{});
+                } else |err| {
+                    log.warn("Failed to init Intel MMA pipeline: {}. Disabling.", .{err});
+                }
             } else {
                 log.info("Intel MMA BF16 shader requested but GPU does not support XMX/MMA", .{});
             }
