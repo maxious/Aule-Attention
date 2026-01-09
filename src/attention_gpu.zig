@@ -26,7 +26,7 @@ pub const ShaderVariant = enum(u8) {
     fp16_amd = 3, // FP16 optimized for AMD 64-wide wavefronts
     bf16 = 4, // BF16 native processing
     coopmat_bf16 = 5, // Cooperative matrix BF16 (emulated or native)
-    coopmat_f16 = 6, // Cooperative matrix FP16
+    coopmat_fp16 = 6, // Cooperative matrix FP16
 };
 
 /// High-performance attention engine that operates on persistent GPU tensors
@@ -40,7 +40,7 @@ pub const AttentionEngine = struct {
     fp16_amd_pipeline: ?AttentionPipeline, // FP16 AMD-optimized
     bf16_pipeline: ?AttentionPipeline, // BF16 shader
     coopmat_bf16_pipeline: ?AttentionPipeline, // Cooperative matrix BF16 shader
-    coopmat_f16_pipeline: ?AttentionPipeline, // Cooperative matrix F16 shader
+    coopmat_fp16_pipeline: ?AttentionPipeline, // Cooperative matrix FP16 shader
     paged_pipeline: ?PagedAttentionPipeline, // PagedAttention with block pool
     copy_kv_pipeline: ?CopyKVPipeline, // K/V scatter to paged format
     active_variant: ShaderVariant,
@@ -84,7 +84,7 @@ pub const AttentionEngine = struct {
         fp16_amd_shader: ?[]const u8,
         bf16_shader: ?[]const u8,
         bf16_coopmat_shader: ?[]const u8,
-        f16_coopmat_shader: ?[]const u8,
+        fp16_coopmat_shader: ?[]const u8,
         paged_shader: ?[]const u8,
         copy_kv_shader: ?[]const u8,
     ) !Self {
@@ -146,13 +146,13 @@ pub const AttentionEngine = struct {
             }
         }
 
-        var coopmat_f16_pipeline: ?AttentionPipeline = null;
-        if (f16_coopmat_shader) |s| {
+        var coopmat_fp16_pipeline: ?AttentionPipeline = null;
+        if (fp16_coopmat_shader) |s| {
             if (ctx.gpu_caps.cooperative_matrix_supported and ctx.gpu_caps.fp16_supported) {
-                coopmat_f16_pipeline = try AttentionPipeline.init(ctx, s);
-                log.info("Cooperative matrix F16 shader loaded", .{});
+                coopmat_fp16_pipeline = try AttentionPipeline.init(ctx, s);
+                log.info("Cooperative matrix FP16 shader loaded", .{});
             } else {
-                log.info("Cooperative matrix F16 shader requested but GPU does not support VK_KHR_cooperative_matrix or FP16", .{});
+                log.info("Cooperative matrix FP16 shader requested but GPU does not support VK_KHR_cooperative_matrix or FP16", .{});
             }
         }
 
@@ -206,7 +206,7 @@ pub const AttentionEngine = struct {
             .fp16_amd_pipeline = fp16_amd_pipeline,
             .bf16_pipeline = bf16_pipeline,
             .coopmat_bf16_pipeline = coopmat_bf16_pipeline,
-            .coopmat_f16_pipeline = coopmat_f16_pipeline,
+            .coopmat_fp16_pipeline = coopmat_fp16_pipeline,
             .paged_pipeline = paged_pipeline,
             .copy_kv_pipeline = copy_kv_pipeline,
             .active_variant = active_variant,
@@ -251,9 +251,9 @@ pub const AttentionEngine = struct {
                 self.active_variant = .coopmat_bf16;
                 log.info("Switched to cooperative matrix BF16 shader", .{});
             },
-            .coopmat_f16 => {
-                if (self.coopmat_f16_pipeline == null) return error.ShaderVariantNotAvailable;
-                self.active_variant = .coopmat_f16;
+            .coopmat_fp16 => {
+                if (self.coopmat_fp16_pipeline == null) return error.ShaderVariantNotAvailable;
+                self.active_variant = .coopmat_fp16;
                 log.info("Switched to cooperative matrix F16 shader", .{});
             },
         }
@@ -273,7 +273,7 @@ pub const AttentionEngine = struct {
             .fp16_amd => if (self.fp16_amd_pipeline) |*p| p else &self.pipeline,
             .bf16 => if (self.bf16_pipeline) |*p| p else &self.pipeline,
             .coopmat_bf16 => if (self.coopmat_bf16_pipeline) |*p| p else &self.pipeline,
-            .coopmat_f16 => if (self.coopmat_f16_pipeline) |*p| p else &self.pipeline,
+            .coopmat_fp16 => if (self.coopmat_fp16_pipeline) |*p| p else &self.pipeline,
         };
     }
 
@@ -383,7 +383,7 @@ pub const AttentionEngine = struct {
         if (self.fp16_amd_pipeline) |*p| p.deinit();
         if (self.bf16_pipeline) |*p| p.deinit();
         if (self.coopmat_bf16_pipeline) |*p| p.deinit();
-        if (self.coopmat_f16_pipeline) |*p| p.deinit();
+        if (self.coopmat_fp16_pipeline) |*p| p.deinit();
         if (self.paged_pipeline) |*p| p.deinit();
         if (self.copy_kv_pipeline) |*p| p.deinit();
         self.pipeline.deinit();

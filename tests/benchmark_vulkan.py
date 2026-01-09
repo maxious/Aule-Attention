@@ -125,7 +125,8 @@ def benchmark_config(
         "fp16": 2,
         "fp16_amd": 3,
         "bf16": 4,
-        "coopmat": 5,  # cooperative matrix
+        "coopmat_bf16": 5,  # cooperative matrix BF16
+        "coopmat_fp16": 6,  # cooperative matrix FP16
     }
 
     variant = variant_map.get(dtype, 0)
@@ -136,17 +137,15 @@ def benchmark_config(
 
     lib.aule_set_shader_variant(variant)
 
-    if dtype == "bf16":
+    if dtype in ("bf16", "coopmat_bf16"):
         create_fn = lib.aule_tensor_create_bf16
         upload_fn = lib.aule_tensor_upload_u16
-        # Generate data and convert to bf16
         data_f32 = np.random.randn(count).astype(np.float32) * 0.02
         data_u16 = float_to_bfloat16(data_f32)
         upload_ptr = data_u16.ctypes.data_as(ctypes.POINTER(ctypes.c_uint16))
-    elif dtype.startswith("fp16"):
+    elif dtype in ("fp16", "fp16_amd", "coopmat_fp16"):
         create_fn = lib.aule_tensor_create_f16
         upload_fn = lib.aule_tensor_upload_u16
-        # Generate data and convert to fp16
         data_f32 = np.random.randn(count).astype(np.float32) * 0.02
         data_u16 = float_to_float16(data_f32)
         upload_ptr = data_u16.ctypes.data_as(ctypes.POINTER(ctypes.c_uint16))
@@ -236,6 +235,35 @@ def print_results_table(results):
     print("=" * 130)
 
 
+def print_comparison_summary(results):
+    print("\n" + "=" * 80)
+    print("SHADER VARIANT COMPARISON (by config)")
+    print("=" * 80)
+
+    configs = {}
+    for r in results:
+        key = r["name"]
+        if key not in configs:
+            configs[key] = {}
+        configs[key][r["dtype"]] = r
+
+    for config_name, variants in configs.items():
+        print(f"\n{config_name}:")
+        sorted_variants = sorted(variants.items(), key=lambda x: x[1]["avg_time_ms"])
+        fastest = sorted_variants[0][1]["avg_time_ms"] if sorted_variants else 1
+
+        for dtype, r in sorted_variants:
+            speedup = r["avg_time_ms"] / fastest if fastest > 0 else 1.0
+            bar_len = int(min(30, 30 / speedup)) if speedup > 0 else 30
+            bar = "█" * bar_len + "░" * (30 - bar_len)
+            marker = " ★ FASTEST" if speedup == 1.0 else f" ({speedup:.2f}x slower)"
+            print(
+                f"  {dtype:15s} {r['avg_time_ms']:8.2f}ms  {r['tflops']:6.3f} TFLOPS  {bar}{marker}"
+            )
+
+    print("\n" + "=" * 80)
+
+
 def main():
     print("=" * 80)
     print("  Aule Attention Vulkan Benchmark Suite")
@@ -296,27 +324,29 @@ def main():
         results = []
 
         configs = [
-            ("Small Decode (1 token)", 1, 32, 1, 64),
-            ("Medium Prefill (256)", 1, 32, 256, 64),
-            ("Large Context (2K)", 1, 32, 2048, 64),
-            # ("Very Large (4K)", 1, 32, 4096, 64),
-            ("Batched Small (B=8)", 8, 32, 128, 64),
+            ("Small (128 tokens)", 1, 8, 128, 64),
+            ("Medium (512 tokens)", 1, 8, 512, 64),
+            ("Large (2K tokens)", 1, 8, 2048, 64),
+            ("Very Large (4K tokens)", 1, 8, 4096, 64),
+            ("Batched Small (B=4)", 4, 8, 256, 64),
+            ("Batched Large (B=4)", 4, 8, 1024, 64),
         ]
 
         # Test available variants
-        variants_to_test = ["fp32"]
+        variants_to_test = ["fp32", "fp32_fast"]
         if lib.aule_has_fp16() == 1:
             variants_to_test.append("fp16")
             if lib.aule_is_amd_optimized() == 1:
                 variants_to_test.append("fp16_amd")
 
-        # Check for bf16 support
         if lib.aule_has_shader_variant(4) == 1:
             variants_to_test.append("bf16")
 
-        # Check for cooperative matrix support
         if lib.aule_has_shader_variant(5) == 1:
-            variants_to_test.append("coopmat")
+            variants_to_test.append("coopmat_bf16")
+
+        if lib.aule_has_shader_variant(6) == 1:
+            variants_to_test.append("coopmat_fp16")
 
         print(f"Testing variants: {variants_to_test}")
 
@@ -341,6 +371,7 @@ def main():
                     )
 
         print_results_table(results)
+        print_comparison_summary(results)
 
         lib.aule_shutdown()
         return True

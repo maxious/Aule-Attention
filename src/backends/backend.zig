@@ -81,7 +81,7 @@ pub const AttentionContext = struct {
         fp16_amd_shader: ?[]const u8,
         bf16_shader: ?[]const u8,
         bf16_coopmat_shader: ?[]const u8,
-        f16_coopmat_shader: ?[]const u8,
+        fp16_coopmat_shader: ?[]const u8,
         paged_shader: ?[]const u8,
         copy_kv_shader: ?[]const u8,
     ) BackendError!Self {
@@ -96,7 +96,7 @@ pub const AttentionContext = struct {
             if (std.mem.eql(u8, backend_name, "hip")) {
                 return initHip(allocator);
             } else if (std.mem.eql(u8, backend_name, "vulkan")) {
-                return initVulkan(allocator, generic_shader, amd_shader, forward_lse_shader, backward_shader, sort_shader, gravity_shader, radix_count_shader, radix_scan_shader, radix_scatter_shader, iota_shader, magnitude_shader, fast_shader, fp16_shader, fp16_amd_shader, bf16_shader, bf16_coopmat_shader, f16_coopmat_shader, paged_shader, copy_kv_shader);
+                return initVulkan(allocator, generic_shader, amd_shader, forward_lse_shader, backward_shader, sort_shader, gravity_shader, radix_count_shader, radix_scan_shader, radix_scatter_shader, iota_shader, magnitude_shader, fast_shader, fp16_shader, fp16_amd_shader, bf16_shader, bf16_coopmat_shader, fp16_coopmat_shader, paged_shader, copy_kv_shader);
             } else if (std.mem.eql(u8, backend_name, "cpu")) {
                 return initCpu(allocator);
             }
@@ -111,7 +111,7 @@ pub const AttentionContext = struct {
             return ctx;
         } else |_| {}
 
-        if (initVulkan(allocator, generic_shader, amd_shader, forward_lse_shader, backward_shader, sort_shader, gravity_shader, radix_count_shader, radix_scan_shader, radix_scatter_shader, iota_shader, magnitude_shader, fast_shader, fp16_shader, fp16_amd_shader, bf16_shader, bf16_coopmat_shader, f16_coopmat_shader, paged_shader, copy_kv_shader)) |ctx| {
+        if (initVulkan(allocator, generic_shader, amd_shader, forward_lse_shader, backward_shader, sort_shader, gravity_shader, radix_count_shader, radix_scan_shader, radix_scatter_shader, iota_shader, magnitude_shader, fast_shader, fp16_shader, fp16_amd_shader, bf16_shader, bf16_coopmat_shader, fp16_coopmat_shader, paged_shader, copy_kv_shader)) |ctx| {
             return ctx;
         } else |_| {}
 
@@ -136,12 +136,12 @@ pub const AttentionContext = struct {
         fp16_amd_shader: ?[]const u8,
         bf16_shader: ?[]const u8,
         bf16_coopmat_shader: ?[]const u8,
-        f16_coopmat_shader: ?[]const u8,
+        fp16_coopmat_shader: ?[]const u8,
         paged_shader: ?[]const u8,
         copy_kv_shader: ?[]const u8,
     ) BackendError!Self {
         const engine = allocator.create(AttentionEngine) catch return BackendError.OutOfMemory;
-        engine.* = AttentionEngine.initWithBackward(allocator, generic_shader, amd_shader, forward_lse_shader, backward_shader, sort_shader, gravity_shader, radix_count_shader, radix_scan_shader, radix_scatter_shader, iota_shader, magnitude_shader, fast_shader, fp16_shader, fp16_amd_shader, bf16_shader, bf16_coopmat_shader, f16_coopmat_shader, paged_shader, copy_kv_shader) catch |err| {
+        engine.* = AttentionEngine.initWithBackward(allocator, generic_shader, amd_shader, forward_lse_shader, backward_shader, sort_shader, gravity_shader, radix_count_shader, radix_scan_shader, radix_scatter_shader, iota_shader, magnitude_shader, fast_shader, fp16_shader, fp16_amd_shader, bf16_shader, bf16_coopmat_shader, fp16_coopmat_shader, paged_shader, copy_kv_shader) catch |err| {
             allocator.destroy(engine);
             return switch (err) {
                 error.OutOfMemory => BackendError.OutOfMemory,

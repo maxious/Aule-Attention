@@ -1,10 +1,11 @@
 const std = @import("std");
 const testing = std.testing;
-const BlockPool = @import("block_pool").BlockPool;
-const BlockPoolConfig = @import("block_pool").BlockPoolConfig;
-const BlockTable = @import("block_table").BlockTable;
-const VulkanContext = @import("vulkan_context").VulkanContext;
-const BufferManager = @import("buffer_manager").BufferManager;
+const aule = @import("aule");
+const BlockPool = aule.BlockPool;
+const BlockPoolConfig = aule.BlockPoolConfig;
+const BlockTable = aule.BlockTable;
+const VulkanContext = aule.VulkanContext;
+const BufferManager = aule.BufferManager;
 
 test "BlockPool: basic allocation and deallocation" {
     const allocator = testing.allocator;
@@ -115,7 +116,7 @@ test "BlockPool: max blocks limit" {
     }
 
     // Next allocation should fail
-    try testing.expectError(error.BlockPoolExhausted, pool.allocateBlock());
+    try testing.expectError(error.MaxBlocksReached, pool.allocateBlock());
 
     // Free all
     for (blocks.items) |b| {

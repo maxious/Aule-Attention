@@ -30,11 +30,17 @@ pub fn main() !void {
     // 2. Benchmark FP32 (Baseline)
     try runBenchmark(ctx, allocator, batch, heads, seq, dim, .f32, .baseline, "FP32 (Baseline)");
 
-    // 3. Benchmark FP32 (Cooperative Matrix)
-    try runBenchmark(ctx, allocator, batch, heads, seq, dim, .f32, .coopmat, "FP32 (Cooperative Matrix)");
+    // 3. Benchmark FP16
+    try runBenchmark(ctx, allocator, batch, heads, seq, dim, .f16, .fp16, "FP16");
 
-    // 4. Benchmark BF16
+    // 4. Benchmark BF16 (Emulated)
     try runBenchmark(ctx, allocator, batch, heads, seq, dim, .bf16, .bf16, "BF16 (Emulated)");
+
+    // 5. Benchmark Cooperative Matrix BF16
+    try runBenchmark(ctx, allocator, batch, heads, seq, dim, .bf16, .coopmat_bf16, "BF16 (Cooperative Matrix)");
+
+    // 6. Benchmark Cooperative Matrix F16
+    try runBenchmark(ctx, allocator, batch, heads, seq, dim, .f16, .coopmat_fp16, "FP16 (Cooperative Matrix)");
 }
 
 fn runBenchmark(ctx: *aule.AttentionContext, allocator: std.mem.Allocator, batch: u32, heads: u32, seq: u32, dim: u32, dtype: DType, variant: ShaderVariant, name: []const u8) !void {
