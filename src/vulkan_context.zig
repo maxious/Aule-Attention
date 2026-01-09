@@ -188,15 +188,15 @@ pub const VulkanContext = struct {
         defer allocator.free(devices);
         _ = try vki.enumeratePhysicalDevices(instance, &device_count, devices.ptr);
 
-        // Find Intel GPU with compute queue (vendor ID 0x8086)
+        // Find best GPU with compute queue
+        // Prioritize Intel (0x8086) > Discrete > Integrated
         var best_device: ?vk.PhysicalDevice = null;
         var best_queue_family: u32 = 0;
+        var best_score: i32 = -1;
 
         for (devices[0..device_count]) |pdev| {
             const props = vki.getPhysicalDeviceProperties(pdev);
-
-            // Only consider Intel GPUs
-            if (props.vendor_id != 0x8086) continue;
+            log.info("Checking device: {s} (Vendor: 0x{x})", .{ std.mem.sliceTo(&props.device_name, 0), props.vendor_id });
 
             var queue_family_count: u32 = 0;
             vki.getPhysicalDeviceQueueFamilyProperties(pdev, &queue_family_count, null);
@@ -207,11 +207,19 @@ pub const VulkanContext = struct {
 
             for (queue_families[0..queue_family_count], 0..) |qf, idx| {
                 if (qf.queue_flags.compute_bit) {
-                    // Prefer discrete GPUs if multiple Intel GPUs
-                    const is_discrete = props.device_type == .discrete_gpu;
-                    if (best_device == null or (is_discrete and best_device != null and vki.getPhysicalDeviceProperties(best_device.?).device_type != .discrete_gpu)) {
+                    var score: i32 = 0;
+                    // Prefer Intel GPUs heavily (as we are optimizing for them)
+                    if (props.vendor_id == 0x8086) score += 1000;
+                    // Prefer discrete GPUs
+                    if (props.device_type == .discrete_gpu) score += 100;
+                    // Base score for having compute
+                    score += 10;
+
+                    if (score > best_score) {
+                        best_score = score;
                         best_device = pdev;
                         best_queue_family = @intCast(idx);
+                        log.info("  -> Candidate score: {}", .{score});
                     }
                     break;
                 }

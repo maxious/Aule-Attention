@@ -114,7 +114,9 @@ pub const AttentionContext = struct {
 
         if (initVulkan(allocator, generic_shader, amd_shader, forward_lse_shader, backward_shader, sort_shader, gravity_shader, radix_count_shader, radix_scan_shader, radix_scatter_shader, iota_shader, magnitude_shader, fast_shader, fp16_shader, fp16_amd_shader, bf16_shader, bf16_coopmat_shader, bf16_intel_mma_shader, fp16_coopmat_shader, paged_shader, copy_kv_shader)) |ctx| {
             return ctx;
-        } else |_| {}
+        } else |err| {
+            std.log.err("Vulkan initialization failed: {}", .{err});
+        }
 
         return initCpu(allocator);
     }
