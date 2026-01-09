@@ -20,6 +20,8 @@ fi
 SHADERS=(
     "attention_f32_fast.comp"
     "attention_f16.comp"
+    "attention_f16_coopmat.comp"
+    "attention_bf16_coopmat.comp"
     "attention_paged.comp"
     "copy_kv_to_paged.comp"
     "radix_count.comp"
@@ -34,15 +36,15 @@ for shader in "${SHADERS[@]}"; do
         output="${shader%.comp}.spv"
         echo -n "  Compiling $shader → $output ... "
 
-        if glslc "$shader" -o "$output" 2>&1 | tee /tmp/glslc_error.log; then
+        if glslc "$shader" -o "$output" > /tmp/glslc_error.log 2>&1; then
             size=$(stat -f%z "$output" 2>/dev/null || stat -c%s "$output")
             size_kb=$((size / 1024))
             echo "OK (${size_kb}KB)"
-            ((COMPILED++))
+            COMPILED=$((COMPILED+1))
         else
             echo "FAILED"
             cat /tmp/glslc_error.log
-            ((FAILED++))
+            FAILED=$((FAILED+1))
         fi
     else
         echo "  Warning: $shader not found, skipping"

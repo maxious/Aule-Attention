@@ -112,6 +112,10 @@ pub const VulkanContext = struct {
         log.info("  Vendor: {s}, AMD Arch: {s}", .{ @tagName(gpu_caps.vendor), @tagName(gpu_caps.amd_arch) });
         log.info("  Extensions checked: FP16={}, BF16={}, Coop Matrix={}, Subgroup size: {}", .{ gpu_caps.fp16_supported, gpu_caps.bf16_supported, gpu_caps.cooperative_matrix_supported, gpu_caps.subgroup_size });
 
+        if (gpu_caps.cooperative_matrix_supported) {
+            // try Self.logCooperativeMatrixProperties(allocator, vki, physical_device);
+        }
+
         // Create logical device with compute queue
         const queue_priority: f32 = 1.0;
         const queue_create_info = vk.DeviceQueueCreateInfo{
@@ -214,6 +218,29 @@ pub const VulkanContext = struct {
 
         log.err("No GPU with compute queue found", .{});
         return error.NoComputeQueue;
+    }
+
+    fn logCooperativeMatrixProperties(allocator: std.mem.Allocator, vki: InstanceDispatch, physical_device: vk.PhysicalDevice) !void {
+        var prop_count: u32 = 0;
+        _ = try vki.getPhysicalDeviceCooperativeMatrixPropertiesKHR(physical_device, &prop_count, null);
+
+        if (prop_count == 0) {
+            log.info("  Cooperative Matrix Properties: None", .{});
+            return;
+        }
+
+        const props = try allocator.alloc(vk.CooperativeMatrixPropertiesKHR, prop_count);
+        defer allocator.free(props);
+        _ = try vki.getPhysicalDeviceCooperativeMatrixPropertiesKHR(physical_device, &prop_count, props.ptr);
+
+        log.info("  Cooperative Matrix Properties ({d} configurations):", .{prop_count});
+        for (props) |p| {
+            log.info("    M={d}, N={d}, K={d}, A={s}, B={s}, C={s}, Res={s}, Scope={s}", .{
+                p.m_size,                p.n_size,           p.k_size,
+                @tagName(p.a_type),      @tagName(p.b_type), @tagName(p.c_type),
+                @tagName(p.result_type), @tagName(p.scope),
+            });
+        }
     }
 };
 
@@ -382,6 +409,7 @@ const apis: []const vk.ApiInfo = &.{
             .getPhysicalDeviceQueueFamilyProperties = true,
             .getPhysicalDeviceMemoryProperties = true,
             .enumerateDeviceExtensionProperties = true,
+            .getPhysicalDeviceCooperativeMatrixPropertiesKHR = true,
             .createDevice = true,
             .getDeviceProcAddr = true,
         },

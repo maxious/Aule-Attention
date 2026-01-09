@@ -1,0 +1,226 @@
+#version 450 core
+
+#pragma use_vulkan_memory_model
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_EXT_scalar_block_layout : enable
+#extension GL_KHR_memory_scope_semantics : enable
+#extension GL_KHR_cooperative_matrix : enable
+#extension GL_EXT_shader_explicit_arithmetic_types : enable
+#extension GL_EXT_buffer_reference : enable
+#extension GL_EXT_control_flow_attributes : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : enable
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : enable
+
+// FlashAttention-2 Forward Pass - FP16
+// Uses cooperative matrix with native FP16.
+
+const uint COOP_M = 8;
+const uint COOP_N = 16;
+const uint COOP_K = 16;
+
+const uint BLOCK_SIZE = 16;
+const uint HEAD_DIM_MAX = 64;
+const uint SHMEM_STRIDE = HEAD_DIM_MAX;
+
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+
+// fp16 I/O buffers
+layout(set = 0, binding = 0) readonly buffer QueryBuffer { float16_t data[]; } Q;
+layout(set = 0, binding = 1) readonly buffer KeyBuffer { float16_t data[]; } K;
+layout(set = 0, binding = 2) readonly buffer ValueBuffer { float16_t data[]; } V;
+layout(set = 0, binding = 3) writeonly buffer OutputBuffer { float16_t data[]; } O;
+layout(set = 0, binding = 4) writeonly buffer LogSumExpBuffer { float16_t data[]; } LSE;
+
+layout(push_constant) uniform PushConstants {
+    uint batch_size;
+    uint num_heads;
+    uint seq_len;
+    uint head_dim;
+    float scale;
+    uint causal;
+    uint store_lse;
+} params;
+
+// Shared memory
+shared float16_t s_Q[BLOCK_SIZE * SHMEM_STRIDE];
+shared float16_t s_K[BLOCK_SIZE * SHMEM_STRIDE];
+shared float16_t s_V[BLOCK_SIZE * SHMEM_STRIDE];
+shared float s_S[BLOCK_SIZE * BLOCK_SIZE]; // Accumulator in FP32
+
+#define Q_IDX(row, col) ((row) * SHMEM_STRIDE + (col))
+#define K_IDX(row, col) ((row) * SHMEM_STRIDE + (col))
+#define V_IDX(row, col) ((row) * SHMEM_STRIDE + (col))
+#define S_IDX(row, col) ((row) * BLOCK_SIZE + (col))
+
+void main() {
+    uint tid = gl_LocalInvocationIndex;
+    
+    uint batch_head_idx = gl_WorkGroupID.z;
+    uint batch_idx = batch_head_idx / params.num_heads;
+    uint head_idx = batch_head_idx % params.num_heads;
+    uint block_row = gl_WorkGroupID.y;
+
+    uint global_row_base = block_row * BLOCK_SIZE;
+    bool is_active_base = (batch_idx < params.batch_size);
+
+    uint base_offset = (batch_idx * params.num_heads + head_idx) * params.seq_len * params.head_dim;
+    uint lse_offset = (batch_idx * params.num_heads + head_idx) * params.seq_len;
+
+    float row_max = -1e30;
+    float row_sum = 0.0;
+    float output_acc[HEAD_DIM_MAX];
+
+    uint actual_head_dim = min(params.head_dim, HEAD_DIM_MAX);
+    uint coop_head_dim = ((actual_head_dim + COOP_K - 1u) / COOP_K) * COOP_K;
+
+    for (uint d = 0; d < HEAD_DIM_MAX; d++) {
+        output_acc[d] = 0.0;
+    }
+
+    // Load Q into Shared Memory (FP16)
+    for (uint i = tid; i < BLOCK_SIZE * actual_head_dim; i += 32) {
+        uint r = i / actual_head_dim;
+        uint c = i % actual_head_dim;
+        uint g_row = global_row_base + r;
+        
+        float16_t val = float16_t(0.0);
+        if (g_row < params.seq_len && is_active_base) {
+            val = Q.data[base_offset + g_row * params.head_dim + c];
+        }
+        s_Q[Q_IDX(r, c)] = val;
+    }
+    // Zero padding
+    if (coop_head_dim > actual_head_dim) {
+        for (uint i = tid; i < BLOCK_SIZE * (coop_head_dim - actual_head_dim); i += 32) {
+             uint idx_in_pad = i;
+             uint r = idx_in_pad / (coop_head_dim - actual_head_dim);
+             uint c_off = idx_in_pad % (coop_head_dim - actual_head_dim);
+             uint c = actual_head_dim + c_off;
+             s_Q[Q_IDX(r, c)] = float16_t(0.0);
+        }
+    }
+
+    barrier();
+
+    uint num_kv_blocks = (params.seq_len + BLOCK_SIZE - 1) / BLOCK_SIZE;
+
+    for (uint kv_block = 0; kv_block < num_kv_blocks; kv_block++) {
+        uint kv_start = kv_block * BLOCK_SIZE;
+
+        // Load K, V (FP16)
+        for (uint i = tid; i < BLOCK_SIZE * actual_head_dim; i += 32) {
+            uint r = i / actual_head_dim;
+            uint c = i % actual_head_dim;
+            uint g_r = kv_start + r;
+            
+            float16_t k_val = float16_t(0.0);
+            float16_t v_val = float16_t(0.0);
+            
+            if (g_r < params.seq_len && is_active_base) {
+                k_val = K.data[base_offset + g_r * params.head_dim + c];
+                v_val = V.data[base_offset + g_r * params.head_dim + c];
+            }
+            s_K[K_IDX(r, c)] = k_val;
+            s_V[V_IDX(r, c)] = v_val;
+        }
+        // Zero padding for K
+        if (coop_head_dim > actual_head_dim) {
+            for (uint i = tid; i < BLOCK_SIZE * (coop_head_dim - actual_head_dim); i += 32) {
+                 uint idx_in_pad = i;
+                 uint r = idx_in_pad / (coop_head_dim - actual_head_dim);
+                 uint c_off = idx_in_pad % (coop_head_dim - actual_head_dim);
+                 uint c = actual_head_dim + c_off;
+                 s_K[K_IDX(r, c)] = float16_t(0.0);
+            }
+        }
+        
+        barrier();
+
+        // Compute S = Q * K^T
+        if (gl_SubgroupID == 0u) {
+            coopmat<float, gl_ScopeSubgroup, COOP_M, COOP_N, gl_MatrixUseAccumulator> matS1;
+            coopmat<float, gl_ScopeSubgroup, COOP_M, COOP_N, gl_MatrixUseAccumulator> matS2;
+            
+            matS1 = coopmat<float, gl_ScopeSubgroup, COOP_M, COOP_N, gl_MatrixUseAccumulator>(0.0);
+            matS2 = coopmat<float, gl_ScopeSubgroup, COOP_M, COOP_N, gl_MatrixUseAccumulator>(0.0);
+            
+            for (uint k_idx = 0; k_idx < coop_head_dim; k_idx += COOP_K) {
+                // Load K^T (16x16)
+                coopmat<float16_t, gl_ScopeSubgroup, COOP_K, COOP_N, gl_MatrixUseB> matKT;
+                // Load from s_K (float16_t array)
+                coopMatLoad(matKT, s_K, k_idx, SHMEM_STRIDE, gl_CooperativeMatrixLayoutColumnMajor);
+                
+                // Load Q (16x16 split into two 8x16)
+                coopmat<float16_t, gl_ScopeSubgroup, COOP_M, COOP_K, gl_MatrixUseA> matQ1;
+                coopMatLoad(matQ1, s_Q, k_idx, SHMEM_STRIDE, gl_CooperativeMatrixLayoutRowMajor);
+                
+                matS1 = coopMatMulAdd(matQ1, matKT, matS1);
+                
+                coopmat<float16_t, gl_ScopeSubgroup, COOP_M, COOP_K, gl_MatrixUseA> matQ2;
+                coopMatLoad(matQ2, s_Q, 8 * SHMEM_STRIDE + k_idx, SHMEM_STRIDE, gl_CooperativeMatrixLayoutRowMajor);
+                
+                matS2 = coopMatMulAdd(matQ2, matKT, matS2);
+            }
+            
+            coopMatStore(matS1, s_S, 0, BLOCK_SIZE, gl_CooperativeMatrixLayoutRowMajor);
+            coopMatStore(matS2, s_S, 8 * BLOCK_SIZE, BLOCK_SIZE, gl_CooperativeMatrixLayoutRowMajor);
+        }
+        
+        barrier();
+        
+        // Softmax & Update (Scalar)
+        if (tid < BLOCK_SIZE) {
+            uint r = tid;
+            
+            // Masking
+            for (uint c = 0; c < BLOCK_SIZE; c++) {
+                 uint g_c = kv_start + c;
+                 float val = s_S[S_IDX(r, c)] * params.scale;
+                 bool masked = false;
+                 if (g_c >= params.seq_len) masked = true;
+                 if (params.causal != 0u && g_c > (global_row_base + r)) masked = true;
+                 if (masked) val = -1e30;
+                 s_S[S_IDX(r, c)] = val;
+            }
+            
+            if (is_active_base && (global_row_base + r) < params.seq_len) {
+                float block_max = -1e30;
+                for (uint c = 0; c < BLOCK_SIZE; c++) {
+                    block_max = max(block_max, s_S[S_IDX(r, c)]);
+                }
+                
+                float new_max = max(row_max, block_max);
+                float scale_factor = exp(row_max - new_max);
+                row_sum *= scale_factor;
+                for (uint d = 0; d < HEAD_DIM_MAX; d++) output_acc[d] *= scale_factor;
+                
+                float block_sum = 0.0;
+                for (uint c = 0; c < BLOCK_SIZE; c++) {
+                    float p = exp(s_S[S_IDX(r, c)] - new_max);
+                    block_sum += p;
+                    for (uint d = 0; d < actual_head_dim; d++) {
+                        output_acc[d] += p * float(s_V[V_IDX(c, d)]);
+                    }
+                }
+                row_sum += block_sum;
+                row_max = new_max;
+            }
+        }
+        barrier();
+    }
+
+    // Output (FP16)
+    if (tid < BLOCK_SIZE) {
+        uint r = tid;
+        uint g_row = global_row_base + r;
+        if (g_row < params.seq_len && is_active_base) {
+             float inv_sum = 1.0 / row_sum;
+             for (uint d = 0; d < actual_head_dim; d++) {
+                 O.data[base_offset + g_row * params.head_dim + d] = float16_t(output_acc[d] * inv_sum);
+             }
+             if (params.store_lse != 0u) {
+                 LSE.data[lse_offset + g_row] = float16_t(row_max + log(row_sum));
+             }
+        }
+    }
+}

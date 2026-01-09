@@ -51,7 +51,8 @@ const attention_f32_fast_spv = @embedFile("attention_f32_fast_spv");
 // Paged attention shader (PagedAttention with block pool)
 const attention_paged_spv = @embedFile("attention_paged_spv");
 const copy_kv_to_paged_spv = @embedFile("copy_kv_to_paged_spv");
-const attention_forward_f32_coopmat_spv = @embedFile("attention_forward_f32_coopmat_spv");
+const attention_bf16_coopmat_spv = @embedFile("attention_bf16_coopmat_spv");
+const attention_f16_coopmat_spv = @embedFile("attention_f16_coopmat_spv");
 
 const attention_bf16_spv = @embedFile("attention_bf16_spv");
 
@@ -86,7 +87,8 @@ export fn aule_init() callconv(.C) i32 {
         attention_f16_spv, // FP16 shader
         attention_f16_amd_spv, // FP16 AMD-optimized
         attention_bf16_spv, // BF16 native shader
-        attention_forward_f32_coopmat_spv, // Cooperative matrix shader
+        attention_bf16_coopmat_spv, // BF16 Cooperative matrix shader
+        attention_f16_coopmat_spv, // F16 Cooperative matrix shader
         attention_paged_spv, // PagedAttention shader
         copy_kv_to_paged_spv, // K/V copy shader for paged attention
     ) catch |err| {
@@ -256,7 +258,8 @@ export fn aule_has_shader_variant(variant: u8) callconv(.C) i32 {
                 .fp16 => if (engine.fp16_pipeline != null) @as(i32, 1) else 0,
                 .fp16_amd => if (engine.fp16_amd_pipeline != null) @as(i32, 1) else 0,
                 .bf16 => if (engine.bf16_pipeline != null) @as(i32, 1) else 0,
-                .coopmat => if (engine.coopmat_pipeline != null) @as(i32, 1) else 0,
+                .coopmat_bf16 => if (engine.coopmat_bf16_pipeline != null) @as(i32, 1) else 0,
+                .coopmat_f16 => if (engine.coopmat_f16_pipeline != null) @as(i32, 1) else 0,
             };
         }
     }
@@ -1163,7 +1166,8 @@ pub const Attention = struct {
             attention_f16_spv,
             attention_f16_amd_spv,
             attention_bf16_spv,
-            attention_forward_f32_coopmat_spv,
+            attention_bf16_coopmat_spv,
+            attention_f16_coopmat_spv,
             attention_paged_spv,
             copy_kv_to_paged_spv,
         );
