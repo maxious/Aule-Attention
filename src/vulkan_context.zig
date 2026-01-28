@@ -99,7 +99,7 @@ pub const VulkanContext = struct {
         const device_properties = vki.getPhysicalDeviceProperties(physical_device);
 
         // Detect GPU capabilities
-        const gpu_caps = detectGpuCapabilities(allocator, vki, physical_device, device_properties);
+        const gpu_caps = try detectGpuCapabilities(allocator, vki, physical_device, device_properties);
         log.info("Selected GPU: {s}", .{gpu_caps.getDeviceName()});
         log.info("  Vendor: {s}, AMD Arch: {s}", .{ @tagName(gpu_caps.vendor), @tagName(gpu_caps.amd_arch) });
         log.info("  FP16: {}, Subgroup size: {}", .{ gpu_caps.fp16_supported, gpu_caps.subgroup_size });

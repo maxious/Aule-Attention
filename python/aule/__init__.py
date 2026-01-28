@@ -60,7 +60,8 @@ if _is_amd_gpu:
         from .triton_flash_amd import get_amd_gpu_arch as _get_amd_gpu_arch
         _triton_amd_available = True
         logger.debug("AMD Triton backend loaded successfully")
-    except ImportError as e:
+    except (ImportError, AttributeError) as e:
+        # AttributeError happens with triton-xpu stub (no jit attribute)
         _backend_errors['triton-amd'] = str(e)
         logger.debug(f"AMD Triton backend failed to load: {e}")
         flash_attention_paged_amd = None
@@ -79,7 +80,8 @@ try:
         logger.debug("Generic Triton backend loaded successfully")
     else:
         _backend_errors['triton'] = "Triton not available on this system"
-except ImportError as e:
+except (ImportError, AttributeError) as e:
+    # AttributeError happens with triton-xpu stub (no jit attribute)
     _backend_errors['triton'] = str(e)
     logger.debug(f"Generic Triton backend failed to load: {e}")
     flash_attention_rope = None
