@@ -1149,6 +1149,11 @@ class Aule:
             for tensor in self._tensors:
                 tensor.destroy()
             self._tensors.clear()
+
+            # Clean up cached tensors
+            for tensors in self._tensor_cache.values():
+                for tensor in tensors:
+                    tensor.destroy()
             self._tensor_cache.clear()
 
             # Only shutdown if we're the singleton, otherwise just mark as not initialized
