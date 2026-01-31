@@ -608,7 +608,9 @@ class Aule:
             error = self._lib.aule_get_error()
             raise AuleError(f"Failed to create tensor: {error.decode()}")
 
-        return GpuTensor(self, handle, shape, dtype)
+        tensor = GpuTensor(self, handle, shape, dtype)
+        self._tensors.append(tensor)
+        return tensor
 
     def attention_gpu(
         self,
