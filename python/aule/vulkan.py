@@ -994,33 +994,45 @@ class Aule:
         values = np.ascontiguousarray(values, dtype=np.float32)
         
         # Create tensors
-        keys_gpu = self.tensor(keys.shape)
-        vals_gpu = self.tensor(values.shape)
-        # Indices are uint32, but GpuTensor stores them as float32 internally for now.
-        # The C API expects a u32 tensor.
-        indices_shape = (batch, heads, seq, 1) # Indices are scalar per vector
-        inds_gpu = self.tensor(indices_shape, dtype=np.uint32)
-        
-        keys_gpu.upload(keys)
-        vals_gpu.upload(values)
-        
-        # Dispatch
-        ret = self._lib.aule_spatial_sort(
-            ctypes.c_uint64(keys_gpu.handle),
-            ctypes.c_uint64(vals_gpu.handle),
-            ctypes.c_uint64(inds_gpu.handle),
-            ctypes.c_uint32(sort_dim)
-        )
-        
-        if ret != 0:
-            error = self._lib.aule_get_error()
-            raise AuleError(f"Spatial sort failed: {error.decode()}")
+        keys_gpu = None
+        vals_gpu = None
+        inds_gpu = None
+
+        try:
+            keys_gpu = self.tensor(keys.shape)
+            vals_gpu = self.tensor(values.shape)
+            # Indices are uint32, but GpuTensor stores them as float32 internally for now.
+            # The C API expects a u32 tensor.
+            indices_shape = (batch, heads, seq, 1) # Indices are scalar per vector
+            inds_gpu = self.tensor(indices_shape, dtype=np.uint32)
             
-        # Download indices
-        indices_np = inds_gpu.download()
-        indices_np = indices_np.view(np.uint32)
-        
-        return indices_np.reshape(batch, heads, seq)
+            keys_gpu.upload(keys)
+            vals_gpu.upload(values)
+
+            # Dispatch
+            ret = self._lib.aule_spatial_sort(
+                ctypes.c_uint64(keys_gpu.handle),
+                ctypes.c_uint64(vals_gpu.handle),
+                ctypes.c_uint64(inds_gpu.handle),
+                ctypes.c_uint32(sort_dim)
+            )
+
+            if ret != 0:
+                error = self._lib.aule_get_error()
+                raise AuleError(f"Spatial sort failed: {error.decode()}")
+
+            # Download indices
+            indices_np = inds_gpu.download()
+            indices_np = indices_np.view(np.uint32)
+
+            return indices_np.reshape(batch, heads, seq)
+        finally:
+            if keys_gpu:
+                keys_gpu.destroy()
+            if vals_gpu:
+                vals_gpu.destroy()
+            if inds_gpu:
+                inds_gpu.destroy()
 
     def attention_gravity(
         self,
